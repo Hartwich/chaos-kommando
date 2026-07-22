@@ -9,12 +9,15 @@ import {
   type SupportedLanguage
 } from "@open-party-lab/game-core";
 import type {
+  ChaosKommandoCrateState,
+  ChaosKommandoCraterState,
   ChaosKommandoExplosionState,
   ChaosKommandoExplosionSourceId,
   ChaosKommandoGravestoneState,
   ChaosKommandoInput,
   ChaosKommandoMercenaryRole,
   ChaosKommandoMercenaryState,
+  ChaosKommandoMineState,
   ChaosKommandoPlayerState,
   ChaosKommandoProjectileState,
   ChaosKommandoState,
@@ -30,23 +33,36 @@ const phaseTimings = resolveRoundPhaseTimings(chaosKommandoManifest.phaseDuratio
 
 const terrainWidth = 2_360;
 const terrainHeight = 1_260;
-const waterlineY = 1_094;
+const initialWaterlineY = 1_094;
 const sampleSpacing = 4;
-const mercenaryRadius = 25;
-const walkSpeed = 146;
+const mercenaryRadius = 20;
+const walkSpeed = 82;
 const gravity = 880;
-const jumpVelocity = -365;
-const turnDurationMs = 25_000;
-const chargeWindowMs = 1_400;
+const jumpVelocity = -330;
+const jumpForwardBoost = 92;
+const turnDurationMs = 30_000;
+const retreatDurationMs = 3_000;
+const chargeWindowMs = 1_750;
 const settleDelayMs = 900;
-const jumpCooldownMs = 700;
-const crosshairDistance = 126;
-const deathExplosionRadius = 96;
-const deathExplosionDamage = 0;
-const deathExplosionCraterDepth = 26;
+const jumpCooldownMs = 650;
+const crosshairDistance = 150;
+const stepUpHeight = 14;
+const stepDownHeight = 20;
+const deathExplosionRadius = 88;
+const deathExplosionDamage = 24;
+const deathExplosionCraterDepth = 30;
 const deathExplosionDelayMs = 340;
 const gravestoneSpawnDelayMs = 280;
-const gravestoneRadius = 22;
+const gravestoneRadius = 18;
+const mineRadius = 11;
+const mineTriggerDistance = 40;
+const mineFuseMs = 1_300;
+const mineDamage = 38;
+const mineBlastRadius = 82;
+const crateRadius = 16;
+const crateDropEveryNTurns = 3;
+const suddenDeathTurn = 16;
+const suddenDeathWaterRisePerTurn = 26;
 
 type RuntimeMercenaryState = ChaosKommandoMercenaryState & {
   moveInputX: number;
@@ -56,6 +72,8 @@ type RuntimeMercenaryState = ChaosKommandoMercenaryState & {
 };
 
 type RuntimeGravestoneState = ChaosKommandoGravestoneState;
+type RuntimeMineState = ChaosKommandoMineState;
+type RuntimeCrateState = ChaosKommandoCrateState;
 
 interface RuntimePlayerState extends Omit<ChaosKommandoPlayerState, "mercenaries"> {
   mercenaries: RuntimeMercenaryState[];
@@ -66,8 +84,11 @@ type RuntimeProjectileState = ChaosKommandoProjectileState & {
   blastRadius: number;
   craterDepth: number;
   gravityScale: number;
+  windScale: number;
   splashColor: string;
   bounceFactor: number;
+  /** Cluster generation (0 = fired shot, 1 = spawned child bomblet). */
+  generation: number;
 };
 
 interface RuntimeTurnState extends ChaosKommandoTurnState {
@@ -84,12 +105,14 @@ interface ChaosKommandoRuntimeState
   extends BaseRoundState,
     Omit<
       ChaosKommandoState,
-      "players" | "projectiles" | "explosions" | "gravestones" | "turn"
+      "players" | "projectiles" | "explosions" | "gravestones" | "mines" | "crates" | "turn"
     > {
   players: RuntimePlayerState[];
   projectiles: RuntimeProjectileState[];
   explosions: ChaosKommandoExplosionState[];
   gravestones: RuntimeGravestoneState[];
+  mines: RuntimeMineState[];
+  crates: RuntimeCrateState[];
   turn: RuntimeTurnState;
   seed: number;
   language: SupportedLanguage;
@@ -101,72 +124,77 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
   {
     id: "kicher-bazooka",
     displayName: "Kicher-Bazooka",
-    description: "Klassische Rakete mit ordentlichem Crater und viel Schub.",
+    description: "Der Klassiker. Fliegt im Bogen, der Wind mischt kraeftig mit.",
     iconPath: "/chaos-kommando/weapons/kicher-bazooka.svg",
     accentColor: "#ff935c",
     fireMode: "charged",
-    damage: 38,
-    blastRadius: 94,
-    projectileSpeed: 680,
-    gravityScale: 0.68,
+    damage: 45,
+    blastRadius: 90,
+    projectileSpeed: 760,
+    gravityScale: 0.74,
+    windScale: 1,
     fuseMs: null,
     craterDepth: 56
   },
   {
     id: "enten-granate",
     displayName: "Enten-Granate",
-    description: "Springt kurz, wartet frech und reisst dann ein tiefes Loch.",
+    description: "Huepft, wartet drei Sekunden und reisst dann ein tiefes Loch.",
     iconPath: "/chaos-kommando/weapons/enten-granate.svg",
     accentColor: "#ffd24d",
     fireMode: "charged",
-    damage: 46,
-    blastRadius: 112,
-    projectileSpeed: 560,
+    damage: 48,
+    blastRadius: 100,
+    projectileSpeed: 600,
     gravityScale: 1.1,
-    fuseMs: 1_550,
-    craterDepth: 68
+    windScale: 0,
+    fuseMs: 3_000,
+    craterDepth: 66
   },
   {
     id: "plunder-pistole",
     displayName: "Plunder-Pistole",
-    description: "Schneller Direkt-Schuss fuer kleine Gemeinheiten auf Distanz.",
+    description: "Schneller Direktschuss ohne Bogen. Ideal zum Nachsetzen.",
     iconPath: "/chaos-kommando/weapons/plunder-pistole.svg",
     accentColor: "#7dd3fc",
     fireMode: "instant",
-    damage: 22,
-    blastRadius: 34,
-    projectileSpeed: 1_000,
-    gravityScale: 0.12,
+    damage: 24,
+    blastRadius: 32,
+    projectileSpeed: 1_050,
+    gravityScale: 0.06,
+    windScale: 0,
     fuseMs: null,
-    craterDepth: 14
+    craterDepth: 12
   },
   {
     id: "regenbogen-rakete",
     displayName: "Regenbogen-Rakete",
-    description: "Sehr frech, sehr bunt und nur einmal pro Soeldner verfuegbar.",
+    description: "Riesiger bunter Bumms, aber nur einmal pro Soeldner.",
     iconPath: "/chaos-kommando/weapons/regenbogen-rakete.svg",
     accentColor: "#f472b6",
     fireMode: "charged",
-    damage: 62,
-    blastRadius: 132,
-    projectileSpeed: 760,
-    gravityScale: 0.58,
+    damage: 72,
+    blastRadius: 140,
+    projectileSpeed: 800,
+    gravityScale: 0.6,
+    windScale: 1.15,
     fuseMs: null,
-    craterDepth: 74
+    craterDepth: 82
   },
   {
     id: "splitter-granate",
     displayName: "Splitter-Granate",
-    description: "Huepft kurz und streut beim Einschlag kleine fiese Splitter.",
+    description: "Huepft kurz und streut beim Knall fiese Splitter.",
     iconPath: "/chaos-kommando/weapons/splitter-granate.svg",
     accentColor: "#fb923c",
     fireMode: "charged",
-    damage: 34,
-    blastRadius: 88,
-    projectileSpeed: 545,
+    damage: 30,
+    blastRadius: 80,
+    projectileSpeed: 580,
     gravityScale: 1.08,
-    fuseMs: 1_450,
-    craterDepth: 48
+    windScale: 0,
+    fuseMs: 2_600,
+    craterDepth: 44
   },
   {
     id: "konfetti-schrot",
@@ -177,52 +205,56 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     fireMode: "instant",
     damage: 13,
     blastRadius: 26,
-    projectileSpeed: 980,
-    gravityScale: 0.18,
+    projectileSpeed: 1_000,
+    gravityScale: 0.14,
+    windScale: 0,
     fuseMs: null,
     craterDepth: 8
   },
   {
     id: "bohrer-rakete",
     displayName: "Bohrer-Rakete",
-    description: "Frisst sich knackig ins Gelaende und macht steile Loecher.",
+    description: "Frisst sich tief ins Gelaende und gruebt steile Tunnel.",
     iconPath: "/chaos-kommando/weapons/bohrer-rakete.svg",
     accentColor: "#a3e635",
     fireMode: "charged",
     damage: 30,
-    blastRadius: 78,
-    projectileSpeed: 720,
-    gravityScale: 0.62,
+    blastRadius: 74,
+    projectileSpeed: 740,
+    gravityScale: 0.66,
+    windScale: 0.4,
     fuseMs: null,
-    craterDepth: 92
+    craterDepth: 96
   },
   {
     id: "gummi-huhn",
     displayName: "Gummi-Huhn",
-    description: "Springt albern, quiekt gemein und schubst alles vom Hang.",
+    description: "Springt albern durch die Gegend und knallt erst nach der Lunte.",
     iconPath: "/chaos-kommando/weapons/gummi-huhn.svg",
     accentColor: "#fde047",
     fireMode: "charged",
-    damage: 26,
-    blastRadius: 82,
-    projectileSpeed: 600,
+    damage: 32,
+    blastRadius: 84,
+    projectileSpeed: 620,
     gravityScale: 0.95,
-    fuseMs: 1_850,
-    craterDepth: 30
+    windScale: 0,
+    fuseMs: 2_800,
+    craterDepth: 34
   },
   {
     id: "seifenblasen-bombe",
     displayName: "Seifenblasen-Bombe",
-    description: "Schwebt weich, platzt breit und pustet Soeldner weg.",
+    description: "Schwebt mit dem Wind davon und pustet Soeldner von Haengen.",
     iconPath: "/chaos-kommando/weapons/seifenblasen-bombe.svg",
     accentColor: "#67e8f9",
     fireMode: "charged",
     damage: 24,
     blastRadius: 118,
-    projectileSpeed: 500,
-    gravityScale: 0.34,
-    fuseMs: 1_900,
-    craterDepth: 24
+    projectileSpeed: 520,
+    gravityScale: 0.3,
+    windScale: 1.8,
+    fuseMs: 2_200,
+    craterDepth: 22
   },
   {
     id: "keks-moerser",
@@ -232,11 +264,102 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     accentColor: "#d97706",
     fireMode: "charged",
     damage: 42,
-    blastRadius: 104,
-    projectileSpeed: 470,
-    gravityScale: 1.22,
+    blastRadius: 100,
+    projectileSpeed: 500,
+    gravityScale: 1.24,
+    windScale: 0.3,
     fuseMs: null,
-    craterDepth: 64
+    craterDepth: 62
+  },
+  {
+    id: "dynamit",
+    displayName: "Dynamit",
+    description: "Ablegen, wegrennen, Ohren zuhalten. Riesiges Loch garantiert.",
+    iconPath: "/chaos-kommando/weapons/dynamit.svg",
+    accentColor: "#ef4444",
+    fireMode: "instant",
+    damage: 70,
+    blastRadius: 125,
+    projectileSpeed: 0,
+    gravityScale: 1,
+    windScale: 0,
+    fuseMs: 3_800,
+    craterDepth: 84
+  },
+  {
+    id: "heilige-granate",
+    displayName: "Heilige Granate",
+    description: "Halleluja. Der groesste Knall im ganzen Arsenal.",
+    iconPath: "/chaos-kommando/weapons/heilige-granate.svg",
+    accentColor: "#facc15",
+    fireMode: "charged",
+    damage: 95,
+    blastRadius: 165,
+    projectileSpeed: 560,
+    gravityScale: 1.05,
+    windScale: 0,
+    fuseMs: 3_400,
+    craterDepth: 96
+  },
+  {
+    id: "banane",
+    displayName: "Banana-Bombe",
+    description: "Platzt beim Aufprall in fuenf huepfende Mini-Bananen.",
+    iconPath: "/chaos-kommando/weapons/banane.svg",
+    accentColor: "#fde047",
+    fireMode: "charged",
+    damage: 38,
+    blastRadius: 84,
+    projectileSpeed: 620,
+    gravityScale: 1.05,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 46
+  },
+  {
+    id: "luftschlag",
+    displayName: "Luftschlag",
+    description: "Vier Bomben aus heiterem Himmel auf die Zielrichtung.",
+    iconPath: "/chaos-kommando/weapons/luftschlag.svg",
+    accentColor: "#94a3b8",
+    fireMode: "instant",
+    damage: 32,
+    blastRadius: 72,
+    projectileSpeed: 0,
+    gravityScale: 0.78,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 44
+  },
+  {
+    id: "baseball-schlaeger",
+    displayName: "Baseball-Schlaeger",
+    description: "Kein Loch, aber ein Traumflug fuer den Getroffenen.",
+    iconPath: "/chaos-kommando/weapons/baseball-schlaeger.svg",
+    accentColor: "#fbbf24",
+    fireMode: "instant",
+    damage: 28,
+    blastRadius: 52,
+    projectileSpeed: 0,
+    gravityScale: 1,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 0
+  },
+  {
+    id: "minigun",
+    displayName: "Konfetti-Minigun",
+    description: "Zehn Kugeln Dauerfeuer, das sich durch Huegel nagt.",
+    iconPath: "/chaos-kommando/weapons/minigun.svg",
+    accentColor: "#f87171",
+    fireMode: "instant",
+    damage: 8,
+    blastRadius: 22,
+    projectileSpeed: 1_150,
+    gravityScale: 0.1,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 10
   }
 ];
 
@@ -249,23 +372,23 @@ const weaponTexts: Partial<
   en: {
     "kicher-bazooka": {
       displayName: "Giggler Bazooka",
-      description: "Classic rocket with a proper crater and plenty of push."
+      description: "The classic. Arcs through the air, the wind joins in."
     },
     "enten-granate": {
       displayName: "Duck Grenade",
-      description: "Bounces briefly, waits cheekily, then tears open a deep hole."
+      description: "Bounces, waits three seconds, then tears open a deep hole."
     },
     "plunder-pistole": {
       displayName: "Plunder Pistol",
-      description: "Fast direct shot for small long-range trouble."
+      description: "Fast straight shot with no arc. Great for finishing off."
     },
     "regenbogen-rakete": {
       displayName: "Rainbow Rocket",
-      description: "Very cheeky, very colorful, and available once per mercenary."
+      description: "A huge colorful blast, but only once per mercenary."
     },
     "splitter-granate": {
       displayName: "Shrapnel Grenade",
-      description: "Bounces briefly and scatters nasty little fragments on impact."
+      description: "Bounces briefly and scatters nasty fragments on the bang."
     },
     "konfetti-schrot": {
       displayName: "Confetti Shotgun",
@@ -273,19 +396,43 @@ const weaponTexts: Partial<
     },
     "bohrer-rakete": {
       displayName: "Drill Rocket",
-      description: "Bites into the terrain and carves steep holes."
+      description: "Bites deep into the terrain and digs steep tunnels."
     },
     "gummi-huhn": {
       displayName: "Rubber Chicken",
-      description: "Bounces absurdly, squeaks meanly, and shoves everything downhill."
+      description: "Bounces around absurdly and only pops after the fuse."
     },
     "seifenblasen-bombe": {
       displayName: "Bubble Bomb",
-      description: "Floats gently, pops wide, and blasts mercenaries away."
+      description: "Drifts with the wind and blows mercenaries off slopes."
     },
     "keks-moerser": {
       displayName: "Cookie Mortar",
       description: "Heavy arcing shot with a crunchy impact from above."
+    },
+    dynamit: {
+      displayName: "Dynamite",
+      description: "Drop it, run away, cover your ears. Giant hole guaranteed."
+    },
+    "heilige-granate": {
+      displayName: "Holy Grenade",
+      description: "Hallelujah. The biggest bang in the entire arsenal."
+    },
+    banane: {
+      displayName: "Banana Bomb",
+      description: "Bursts on impact into five bouncing mini bananas."
+    },
+    luftschlag: {
+      displayName: "Air Strike",
+      description: "Four bombs out of the blue onto your aiming direction."
+    },
+    "baseball-schlaeger": {
+      displayName: "Baseball Bat",
+      description: "No crater, but a dream flight for whoever gets hit."
+    },
+    minigun: {
+      displayName: "Confetti Minigun",
+      description: "Ten rounds of sustained fire that chews through hills."
     }
   }
 };
@@ -314,10 +461,19 @@ const chaosKommandoText = {
     draw: "Alle Teams sind untergegangen.",
     smokeClears: "Der Rauch verzieht sich. Das naechste Team ist dran.",
     intro: "Chaos-Kommando macht die Sicherungen locker.",
-    introLog: "Bunt, ueberdreht, lustig, taktisch und schoen gemein.",
+    introLog: "Bunt, ueberdreht, taktisch und schoen gemein.",
     start: "Die Lunte brennt. Das erste Team stuermt los.",
     mercenaryForward: (playerName: string, mercenaryName: string) => `${playerName} schickt jetzt ${mercenaryName} vor.`,
-    clockFaster: "Die Uhr war schneller. Das naechste Team uebernimmt."
+    clockFaster: "Die Uhr war schneller. Das naechste Team uebernimmt.",
+    retreat: "Rueckzug! Noch schnell in Deckung.",
+    splash: (name: string) => `${name} verschwindet mit einem Platsch im Wasser.`,
+    drowned: (name: string) => `${name} geht baden. Fuer immer.`,
+    mineTriggered: "Eine Mine piept boese ...",
+    crateDrop: "Eine Versorgungskiste schwebt ein!",
+    crateCollected: (name: string, weaponName: string, amount: number) =>
+      `${name} schnappt sich die Kiste: +${amount}x ${weaponName}.`,
+    crateDestroyed: "Die Versorgungskiste wurde zerlegt.",
+    suddenDeath: "SUDDEN DEATH! Das Wasser steigt!"
   },
   en: {
     waitingAction: "Chaos Commando is waiting for the next action.",
@@ -332,7 +488,16 @@ const chaosKommandoText = {
     introLog: "Colorful, loud, tactical, and delightfully mean.",
     start: "The fuse is lit. The first team rushes in.",
     mercenaryForward: (playerName: string, mercenaryName: string) => `${playerName} sends ${mercenaryName} forward.`,
-    clockFaster: "The clock won. The next team takes over."
+    clockFaster: "The clock won. The next team takes over.",
+    retreat: "Retreat! Get to cover, quick.",
+    splash: (name: string) => `${name} vanishes into the water with a splash.`,
+    drowned: (name: string) => `${name} goes for a swim. Forever.`,
+    mineTriggered: "A mine is beeping angrily ...",
+    crateDrop: "A supply crate is floating in!",
+    crateCollected: (name: string, weaponName: string, amount: number) =>
+      `${name} grabs the crate: +${amount}x ${weaponName}.`,
+    crateDestroyed: "The supply crate got shredded.",
+    suddenDeath: "SUDDEN DEATH! The water is rising!"
   }
 } satisfies Record<SupportedLanguage, {
   waitingAction: string;
@@ -346,6 +511,14 @@ const chaosKommandoText = {
   start: string;
   mercenaryForward: (playerName: string, mercenaryName: string) => string;
   clockFaster: string;
+  retreat: string;
+  splash: (name: string) => string;
+  drowned: (name: string) => string;
+  mineTriggered: string;
+  crateDrop: string;
+  crateCollected: (name: string, weaponName: string, amount: number) => string;
+  crateDestroyed: string;
+  suddenDeath: string;
 }>;
 
 const mercenaryTemplates: Array<{
@@ -358,22 +531,22 @@ const mercenaryTemplates: Array<{
   {
     role: "sprinter",
     name: "Turbo-Toni",
-    spritePath: "/chaos-kommando/characters/marshmallow-portrait.png",
-    portraitPath: "/chaos-kommando/characters/marshmallow-portrait.png",
+    spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
+    portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#22d3ee"
   },
   {
     role: "grenadier",
     name: "Greta Granate",
-    spritePath: "/chaos-kommando/characters/marshmallow-portrait.png",
-    portraitPath: "/chaos-kommando/characters/marshmallow-portrait.png",
+    spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
+    portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#fbbf24"
   },
   {
     role: "chaos-schuetze",
     name: "Bummo Blitz",
-    spritePath: "/chaos-kommando/characters/marshmallow-portrait.png",
-    portraitPath: "/chaos-kommando/characters/marshmallow-portrait.png",
+    spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
+    portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#fb7185"
   }
 ];
@@ -382,6 +555,8 @@ interface TerrainPreset {
   id: string;
   name: string;
   controlPoints: Array<{ x: number; y: number }>;
+  /** Pre-carved caves and arches so maps start with real overhangs. */
+  initialCraters: ChaosKommandoCraterState[];
 }
 
 const terrainPresets: TerrainPreset[] = [
@@ -403,6 +578,11 @@ const terrainPresets: TerrainPreset[] = [
       { x: 1960, y: 644 },
       { x: 2140, y: 718 },
       { x: 2360, y: 834 }
+    ],
+    initialCraters: [
+      { x: 610, y: 700, r: 66 },
+      { x: 1180, y: 830, r: 78 },
+      { x: 1750, y: 660, r: 62 }
     ]
   },
   {
@@ -422,6 +602,11 @@ const terrainPresets: TerrainPreset[] = [
       { x: 2080, y: 578 },
       { x: 2230, y: 494 },
       { x: 2360, y: 734 }
+    ],
+    initialCraters: [
+      { x: 640, y: 590, r: 58 },
+      { x: 1450, y: 610, r: 70 },
+      { x: 2080, y: 720, r: 64 }
     ]
   },
   {
@@ -441,6 +626,37 @@ const terrainPresets: TerrainPreset[] = [
       { x: 1940, y: 650 },
       { x: 2160, y: 706 },
       { x: 2360, y: 812 }
+    ],
+    initialCraters: [
+      { x: 700, y: 590, r: 62 },
+      { x: 1580, y: 600, r: 66 },
+      { x: 930, y: 780, r: 72 }
+    ]
+  },
+  {
+    id: "wurmfelsen",
+    name: "Wurmfelsen",
+    controlPoints: [
+      { x: 0, y: 860 },
+      { x: 200, y: 730 },
+      { x: 380, y: 520 },
+      { x: 560, y: 470 },
+      { x: 720, y: 640 },
+      { x: 900, y: 780 },
+      { x: 1120, y: 560 },
+      { x: 1300, y: 440 },
+      { x: 1480, y: 500 },
+      { x: 1640, y: 700 },
+      { x: 1840, y: 760 },
+      { x: 2040, y: 560 },
+      { x: 2200, y: 500 },
+      { x: 2360, y: 720 }
+    ],
+    initialCraters: [
+      { x: 560, y: 610, r: 74 },
+      { x: 1300, y: 590, r: 82 },
+      { x: 2100, y: 680, r: 68 },
+      { x: 900, y: 920, r: 60 }
     ]
   }
 ];
@@ -505,7 +721,7 @@ function resolveAimAngle(aimX: number, aimY: number, fallback: number): number {
 function buildWind(seed: number, language: SupportedLanguage): ChaosKommandoWindState {
   const rng = createRng(seed ^ 0xa53c9f);
   const direction = rng() > 0.5 ? 1 : -1;
-  const strength = Math.round((0.2 + rng() * 0.8) * 100) / 100;
+  const strength = Math.round((0.1 + rng() * 0.9) * 100) / 100;
 
   return {
     strength,
@@ -526,7 +742,7 @@ function createSpawnAnchors(playerCount: number): number[] {
 }
 
 function createMercenarySpawnXs(anchor: number, width: number): number[] {
-  return [-210, 0, 210].map((offset) =>
+  return [-250, 0, 250].map((offset) =>
     clamp(anchor + offset, mercenaryRadius + 16, width - mercenaryRadius - 16)
   );
 }
@@ -581,8 +797,8 @@ function flattenTerrain(samples: number[], centerX: number, width: number, targe
   }
 }
 
-function createTerrain(playerCount: number, _seed: number): ChaosKommandoTerrainState {
-  const preset = terrainPresets[0];
+function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainState {
+  const preset = terrainPresets[Math.abs(seed) % terrainPresets.length] ?? terrainPresets[0];
   const sampleCount = Math.floor(terrainWidth / sampleSpacing) + 1;
   const samples = Array.from({ length: sampleCount }, (_, index) => {
     const x = index * sampleSpacing;
@@ -592,7 +808,7 @@ function createTerrain(playerCount: number, _seed: number): ChaosKommandoTerrain
       Math.cos(x / 118) * 5 +
       Math.sin(x / 28) * 2;
 
-    return clamp(sculpted, 410, waterlineY - 66);
+    return clamp(sculpted, 410, initialWaterlineY - 66);
   });
 
   const spawnAnchors = createSpawnAnchors(playerCount);
@@ -603,44 +819,102 @@ function createTerrain(playerCount: number, _seed: number): ChaosKommandoTerrain
     }
   }
 
-  flattenTerrain(samples, terrainWidth * 0.18, 140, 676);
-  flattenTerrain(samples, terrainWidth * 0.52, 172, 724);
-  flattenTerrain(samples, terrainWidth * 0.84, 150, 690);
-
   return {
     mapId: preset.id,
     mapName: preset.name,
     width: terrainWidth,
     height: terrainHeight,
-    waterlineY,
+    waterlineY: initialWaterlineY,
     sampleSpacing,
-    samples
+    samples,
+    craters: preset.initialCraters.map((crater) => ({ ...crater }))
   };
 }
 
-function resolveGroundY(terrain: ChaosKommandoTerrainState, x: number): number {
-  const clampedX = clamp(x, 0, terrain.width);
-  const scaled = clampedX / terrain.sampleSpacing;
-  const leftIndex = Math.floor(scaled);
-  const rightIndex = Math.min(terrain.samples.length - 1, leftIndex + 1);
-  const blend = scaled - leftIndex;
-  const leftValue = terrain.samples[leftIndex] ?? terrain.samples[terrain.samples.length - 1];
-  const rightValue = terrain.samples[rightIndex] ?? leftValue;
-  return leftValue + (rightValue - leftValue) * blend;
+/**
+ * Base heightmap surface (without craters). Used for initial placement only.
+ */
+function resolveBaseGroundY(terrain: ChaosKommandoTerrainState, x: number): number {
+  return resolveSampleHeight(terrain.samples, clamp(x, 0, terrain.width));
+}
+
+/**
+ * True 2D solidity test: below the heightmap AND not inside any crater.
+ * This is what makes tunnels, caves and overhangs possible.
+ */
+function isTerrainSolid(terrain: ChaosKommandoTerrainState, x: number, y: number): boolean {
+  if (x < 0 || x > terrain.width || y < 0) {
+    return false;
+  }
+
+  if (y >= terrain.height) {
+    return true;
+  }
+
+  if (y < resolveBaseGroundY(terrain, x)) {
+    return false;
+  }
+
+  const craters = terrain.craters;
+
+  for (let index = 0; index < craters.length; index += 1) {
+    const crater = craters[index];
+    const dx = x - crater.x;
+    const dy = y - crater.y;
+
+    if (dx * dx + dy * dy < crater.r * crater.r) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Scan downward for the first solid pixel (2px steps). Returns null when
+ * nothing solid exists in the window.
+ */
+function findSurfaceBelow(
+  terrain: ChaosKommandoTerrainState,
+  x: number,
+  fromY: number,
+  toY: number
+): number | null {
+  const start = Math.max(0, fromY);
+  const end = Math.min(terrain.height, toY);
+
+  for (let y = start; y <= end; y += 2) {
+    if (isTerrainSolid(terrain, x, y)) {
+      return y;
+    }
+  }
+
+  return null;
+}
+
+/** First solid surface scanning from the sky. Used for spawning objects. */
+function resolveSpawnSurfaceY(terrain: ChaosKommandoTerrainState, x: number): number {
+  return findSurfaceBelow(terrain, x, 0, terrain.height) ?? resolveBaseGroundY(terrain, x);
 }
 
 function buildAmmo(): Record<ChaosKommandoWeaponId, number> {
   return {
-    "kicher-bazooka": 3,
-    "enten-granate": 2,
-    "plunder-pistole": 6,
+    "kicher-bazooka": 99,
+    "enten-granate": 99,
+    "plunder-pistole": 99,
     "regenbogen-rakete": 1,
-    "splitter-granate": 2,
+    "splitter-granate": 3,
     "konfetti-schrot": 4,
     "bohrer-rakete": 2,
     "gummi-huhn": 2,
     "seifenblasen-bombe": 2,
-    "keks-moerser": 2
+    "keks-moerser": 3,
+    dynamit: 2,
+    "heilige-granate": 1,
+    banane: 2,
+    luftschlag: 1,
+    "baseball-schlaeger": 3,
+    minigun: 3
   };
 }
 
@@ -652,7 +926,7 @@ function createMercenary(
   terrain: ChaosKommandoTerrainState
 ): RuntimeMercenaryState {
   const x = clamp(spawnX, mercenaryRadius + 4, terrain.width - mercenaryRadius - 4);
-  const y = resolveGroundY(terrain, x) - mercenaryRadius;
+  const y = resolveSpawnSurfaceY(terrain, x) - mercenaryRadius;
 
   return {
     id: `${player.id}:merc:${mercenaryIndex}`,
@@ -681,6 +955,47 @@ function createMercenary(
     airborneFromY: null,
     deathExploded: false
   };
+}
+
+function createMines(
+  terrain: ChaosKommandoTerrainState,
+  playerCount: number,
+  seed: number
+): RuntimeMineState[] {
+  const rng = createRng(seed ^ 0x77aa11);
+  const spawnAnchors = createSpawnAnchors(playerCount);
+  const mines: RuntimeMineState[] = [];
+  const mineCount = 5 + playerCount;
+  let attempts = 0;
+
+  while (mines.length < mineCount && attempts < 80) {
+    attempts += 1;
+    const x = 140 + rng() * (terrain.width - 280);
+    const nearSpawn = spawnAnchors.some((anchor) => Math.abs(anchor - x) < 220);
+
+    if (nearSpawn) {
+      continue;
+    }
+
+    const surfaceY = findSurfaceBelow(terrain, x, 0, terrain.waterlineY - 20);
+
+    if (surfaceY === null) {
+      continue;
+    }
+
+    mines.push({
+      id: `mine:${mines.length}:${Math.round(x)}`,
+      x,
+      y: surfaceY - mineRadius,
+      vx: 0,
+      vy: 0,
+      radius: mineRadius,
+      grounded: true,
+      explodesAt: null
+    });
+  }
+
+  return mines;
 }
 
 function countAliveMercenaries(mercenaries: RuntimeMercenaryState[]): number {
@@ -788,22 +1103,29 @@ function resolveAvailableWeapon(
     }
   }
 
-  return "plunder-pistole";
+  return "kicher-bazooka";
 }
 
 function isBouncyWeapon(weaponId: ChaosKommandoWeaponId): boolean {
-  return weaponId === "enten-granate" || weaponId === "splitter-granate" || weaponId === "gummi-huhn";
+  return (
+    weaponId === "enten-granate" ||
+    weaponId === "splitter-granate" ||
+    weaponId === "gummi-huhn" ||
+    weaponId === "heilige-granate" ||
+    weaponId === "dynamit"
+  );
 }
 
 function resolveProjectileRadius(weaponId: ChaosKommandoWeaponId): number {
   switch (weaponId) {
     case "plunder-pistole":
-      return 8;
+      return 7;
     case "konfetti-schrot":
-      return 5;
+    case "minigun":
+      return 4;
     case "enten-granate":
     case "splitter-granate":
-      return 11;
+      return 10;
     case "gummi-huhn":
       return 13;
     case "seifenblasen-bombe":
@@ -811,6 +1133,14 @@ function resolveProjectileRadius(weaponId: ChaosKommandoWeaponId): number {
     case "keks-moerser":
       return 12;
     case "bohrer-rakete":
+      return 9;
+    case "dynamit":
+      return 11;
+    case "heilige-granate":
+      return 14;
+    case "banane":
+      return 10;
+    case "luftschlag":
       return 10;
     case "kicher-bazooka":
     case "regenbogen-rakete":
@@ -826,18 +1156,16 @@ function resolveProjectileBounceFactor(weaponId: ChaosKommandoWeaponId): number 
     case "splitter-granate":
       return 0.5;
     case "enten-granate":
+      return 0.48;
+    case "heilige-granate":
+      return 0.34;
+    case "banane":
       return 0.55;
+    case "dynamit":
+      return 0.05;
     default:
       return 0.18;
   }
-}
-
-function resolveShotSpreadAngles(weaponId: ChaosKommandoWeaponId): number[] {
-  if (weaponId !== "konfetti-schrot") {
-    return [0];
-  }
-
-  return [-0.18, -0.09, 0, 0.09, 0.18];
 }
 
 function refreshPlayerSummaries(players: RuntimePlayerState[]): RuntimePlayerState[] {
@@ -873,6 +1201,7 @@ function buildTurnState(players: RuntimePlayerState[], now: number): RuntimeTurn
     chargeStartedAt: null,
     chargeRatio: 0,
     settleEndsAt: null,
+    retreatEndsAt: null,
     crosshairX: (activeMercenary?.x ?? terrainWidth / 2) + Math.cos(aimAngleRad) * crosshairDistance,
     crosshairY: (activeMercenary?.y ?? terrainHeight / 2) + Math.sin(aimAngleRad) * crosshairDistance,
     crosshairDistance,
@@ -958,6 +1287,12 @@ function resolveCameraFocus(state: ChaosKommandoRuntimeState): { x: number; y: n
     }
   }
 
+  const triggeredMine = state.mines.find((mine) => mine.explodesAt !== null);
+
+  if (triggeredMine) {
+    return { x: triggeredMine.x, y: triggeredMine.y };
+  }
+
   const mercenary = findMercenaryById(state, state.turn.activeMercenaryId);
 
   if (mercenary) {
@@ -965,6 +1300,80 @@ function resolveCameraFocus(state: ChaosKommandoRuntimeState): { x: number; y: n
   }
 
   return { x: state.terrain.width / 2, y: state.terrain.height / 2 };
+}
+
+function spawnCrateIfDue(
+  state: ChaosKommandoRuntimeState,
+  turnNumber: number,
+  now: number
+): ChaosKommandoRuntimeState {
+  if (turnNumber < 2 || turnNumber % crateDropEveryNTurns !== 0) {
+    return state;
+  }
+
+  const rng = createRng(state.seed ^ (turnNumber * 613));
+  const crateWeapons: ChaosKommandoWeaponId[] = [
+    "dynamit",
+    "heilige-granate",
+    "banane",
+    "luftschlag",
+    "minigun",
+    "regenbogen-rakete",
+    "bohrer-rakete",
+    "seifenblasen-bombe",
+    "gummi-huhn",
+    "keks-moerser"
+  ];
+  const weaponId = crateWeapons[Math.floor(rng() * crateWeapons.length)] ?? "banane";
+  const x = 160 + rng() * (state.terrain.width - 320);
+  const text = chaosKommandoText[state.language];
+
+  return {
+    ...state,
+    crates: [
+      ...state.crates,
+      {
+        id: `crate:${turnNumber}`,
+        x,
+        y: -30,
+        vx: 0,
+        vy: 30,
+        radius: crateRadius,
+        grounded: false,
+        weaponId,
+        amount: 1 + Math.floor(rng() * 2)
+      }
+    ],
+    actionLog: pushActionLog(state.actionLog, text.crateDrop),
+    updatedAt: now
+  };
+}
+
+function applySuddenDeath(
+  state: ChaosKommandoRuntimeState,
+  turnNumber: number,
+  now: number
+): ChaosKommandoRuntimeState {
+  if (turnNumber < suddenDeathTurn) {
+    return state;
+  }
+
+  const nextWaterlineY = Math.max(560, state.terrain.waterlineY - suddenDeathWaterRisePerTurn);
+  const text = chaosKommandoText[state.language];
+
+  return {
+    ...state,
+    suddenDeath: true,
+    terrain: {
+      ...state.terrain,
+      waterlineY: nextWaterlineY
+    },
+    actionLog:
+      turnNumber === suddenDeathTurn
+        ? pushActionLog(state.actionLog, text.suddenDeath)
+        : state.actionLog,
+    updatedAt: now
+  };
 }
 
 function startPlayerTurn(
@@ -977,8 +1386,9 @@ function startPlayerTurn(
 ): ChaosKommandoRuntimeState {
   const activeMercenary = findMercenaryById(state, activeMercenaryId);
   const nextWeaponId = resolveAvailableWeapon(activeMercenary, state.turn.currentWeaponId);
+  const isNewTurn = turnNumber !== state.turn.turnNumber;
 
-  const nextState: ChaosKommandoRuntimeState = {
+  let nextState: ChaosKommandoRuntimeState = {
     ...state,
     players: state.players.map((player) => ({
       ...player,
@@ -998,11 +1408,23 @@ function startPlayerTurn(
       resolvingShot: false,
       chargeStartedAt: null,
       chargeRatio: 0,
-      settleEndsAt: null
+      settleEndsAt: null,
+      retreatEndsAt: null
     },
     actionLog: pushActionLog(state.actionLog, reason),
     updatedAt: now
   };
+
+  if (isNewTurn) {
+    // Worms style: fresh wind every single turn.
+    nextState = {
+      ...nextState,
+      wind: buildWind(nextState.seed ^ (turnNumber * 131), nextState.language)
+    };
+    nextState = applySuddenDeath(nextState, turnNumber, now);
+    nextState = spawnCrateIfDue(nextState, turnNumber, now);
+  }
+
   const focus = resolveCameraFocus(nextState);
 
   return {
@@ -1038,6 +1460,9 @@ function resolveNextTurn(state: ChaosKommandoRuntimeState, now: number, reason: 
   return state;
 }
 
+/**
+ * True 2D destruction: every blast punches a circular crater into the terrain.
+ */
 function updateTerrainForExplosion(
   terrain: ChaosKommandoTerrainState,
   x: number,
@@ -1045,45 +1470,23 @@ function updateTerrainForExplosion(
   radius: number,
   craterDepth: number
 ): ChaosKommandoTerrainState {
-  const samples = [...terrain.samples];
-  const rimRadius = radius * 1.18;
-  const startIndex = Math.max(0, Math.floor((x - rimRadius) / terrain.sampleSpacing));
-  const endIndex = Math.min(samples.length - 1, Math.ceil((x + rimRadius) / terrain.sampleSpacing));
-  const carveCenterY = y - Math.max(0, radius - craterDepth);
-
-  for (let index = startIndex; index <= endIndex; index += 1) {
-    const sampleX = index * terrain.sampleSpacing;
-    const distance = Math.abs(sampleX - x);
-
-    if (distance <= radius) {
-      const arcDepth = Math.sqrt(Math.max(0, radius * radius - distance * distance));
-      const craterFloor = carveCenterY + arcDepth;
-      const roughness = Math.sin((sampleX + y) * 0.043) * Math.min(8, craterDepth * 0.09);
-      samples[index] = Math.min(
-        terrain.waterlineY - 10,
-        Math.max(samples[index], craterFloor + roughness)
-      );
-      continue;
-    }
-
-    if (distance <= rimRadius) {
-      const rimRatio = 1 - (distance - radius) / Math.max(1, rimRadius - radius);
-      const rimLift = Math.sin(rimRatio * Math.PI) * Math.min(16, craterDepth * 0.22);
-      samples[index] = clamp(samples[index] - rimLift, 390, terrain.waterlineY - 10);
-    }
+  if (craterDepth <= 0 || radius <= 4) {
+    return terrain;
   }
 
-  for (let index = Math.max(1, startIndex); index < Math.min(samples.length - 1, endIndex); index += 1) {
-    const previous = samples[index - 1] ?? samples[index];
-    const current = samples[index] ?? previous;
-    const next = samples[index + 1] ?? current;
-    samples[index] = current * 0.7 + (previous + next) * 0.15;
-  }
+  const craterRadius = Math.max(8, radius * 0.9);
 
   return {
     ...terrain,
-    samples
+    craters: [...terrain.craters, { x: Math.round(x), y: Math.round(y), r: Math.round(craterRadius) }]
   };
+}
+
+interface ExplosionOptions {
+  /** Base knockback strength; scales with proximity. */
+  pushStrength?: number;
+  /** When set, knockback is applied along this fixed direction (baseball bat). */
+  pushAngleRad?: number;
 }
 
 function applyExplosion(
@@ -1093,7 +1496,8 @@ function applyExplosion(
   definition: ChaosKommandoWeaponDefinition,
   now: number,
   ownerPlayerId: string,
-  sourceWeaponId: ChaosKommandoExplosionSourceId = definition.id
+  sourceWeaponId: ChaosKommandoExplosionSourceId = definition.id,
+  options: ExplosionOptions = {}
 ): ChaosKommandoRuntimeState {
   const nextTerrain = updateTerrainForExplosion(
     state.terrain,
@@ -1102,6 +1506,7 @@ function applyExplosion(
     definition.blastRadius,
     definition.craterDepth
   );
+  const basePush = options.pushStrength ?? 250 + definition.damage * 2.6;
   const nextPlayers = state.players.map((player) => ({
     ...player,
     mercenaries: player.mercenaries.map((mercenary) => {
@@ -1115,10 +1520,12 @@ function applyExplosion(
 
       const normalizedDistance = clamp(distance / definition.blastRadius, 0, 1);
       const safeDistance = Math.max(distance, 8);
-      const pushStrength = (1 - normalizedDistance) * 355;
+      const pushStrength = (1 - normalizedDistance * 0.72) * basePush;
+      const pushX = options.pushAngleRad !== undefined ? Math.cos(options.pushAngleRad) : dx / safeDistance;
+      const pushY = options.pushAngleRad !== undefined ? Math.sin(options.pushAngleRad) : dy / safeDistance;
       const damage = mercenary.alive
         ? definition.damage > 0
-          ? Math.max(1, Math.round(definition.damage * (1 - normalizedDistance)))
+          ? Math.max(1, Math.round(definition.damage * (1 - normalizedDistance * 0.85)))
           : 0
         : 0;
       const nextHp = Math.max(0, mercenary.hp - damage);
@@ -1129,8 +1536,8 @@ function applyExplosion(
         hp: nextHp,
         alive: mercenary.alive ? !killed : false,
         grounded: false,
-        vx: mercenary.vx + (dx / safeDistance) * pushStrength,
-        vy: mercenary.vy + (dy / safeDistance) * pushStrength - 150,
+        vx: mercenary.vx + pushX * pushStrength,
+        vy: mercenary.vy + pushY * pushStrength - 130,
         airborneFromY: mercenary.y
       };
     })
@@ -1155,6 +1562,32 @@ function applyExplosion(
       vy: gravestone.vy + (dy / safeDistance) * pushStrength - 120
     };
   });
+  // Chain-trigger nearby mines and knock them around.
+  const nextMines = state.mines.map((mine) => {
+    const dx = mine.x - explosionX;
+    const dy = mine.y - explosionY;
+    const distance = Math.hypot(dx, dy);
+
+    if (distance > definition.blastRadius * 1.15) {
+      return mine;
+    }
+
+    const safeDistance = Math.max(distance, 8);
+    const pushStrength = (1 - clamp(distance / definition.blastRadius, 0, 1)) * 260;
+
+    return {
+      ...mine,
+      grounded: false,
+      vx: mine.vx + (dx / safeDistance) * pushStrength,
+      vy: mine.vy + (dy / safeDistance) * pushStrength - 90,
+      explodesAt: mine.explodesAt === null ? now + 350 : Math.min(mine.explodesAt, now + 350)
+    };
+  });
+  // Blasts shred supply crates.
+  const survivingCrates = state.crates.filter(
+    (crate) => Math.hypot(crate.x - explosionX, crate.y - explosionY) > definition.blastRadius
+  );
+  const crateDestroyed = survivingCrates.length !== state.crates.length;
   const refreshedPlayers = refreshPlayerSummaries(nextPlayers);
   const explosion: ChaosKommandoExplosionState = {
     id: `explosion:${now}:${Math.round(explosionX)}:${Math.round(explosionY)}`,
@@ -1165,16 +1598,25 @@ function applyExplosion(
     color: definition.accentColor,
     createdAt: now
   };
+  const text = chaosKommandoText[state.language];
+  let actionLog = pushActionLog(
+    state.actionLog,
+    `${findPlayer(state, ownerPlayerId)?.name ?? "Ein Team"} locht das Terrain mit ${definition.displayName}.`
+  );
+
+  if (crateDestroyed) {
+    actionLog = pushActionLog(actionLog, text.crateDestroyed);
+  }
+
   const nextState: ChaosKommandoRuntimeState = {
     ...state,
     terrain: nextTerrain,
     players: refreshedPlayers,
     gravestones: nextGravestones,
-    explosions: [explosion, ...state.explosions].slice(0, 8),
-    actionLog: pushActionLog(
-      state.actionLog,
-      `${findPlayer(state, ownerPlayerId)?.name ?? "Ein Team"} locht das Terrain mit ${definition.displayName}.`
-    ),
+    mines: nextMines,
+    crates: survivingCrates,
+    explosions: [explosion, ...state.explosions].slice(0, 14),
+    actionLog,
     updatedAt: now
   };
   const focus = resolveCameraFocus(nextState);
@@ -1218,6 +1660,7 @@ function buildDeathExplosionDefinition(mercenary: RuntimeMercenaryState): ChaosK
     blastRadius: deathExplosionRadius,
     projectileSpeed: 0,
     gravityScale: 1,
+    windScale: 0,
     fuseMs: null,
     craterDepth: deathExplosionCraterDepth
   };
@@ -1278,14 +1721,14 @@ function createGravestone(
   mercenary: RuntimeMercenaryState
 ): RuntimeGravestoneState {
   const x = clamp(mercenary.x, gravestoneRadius + 12, state.terrain.width - gravestoneRadius - 12);
-  const groundY = resolveGroundY(state.terrain, x);
+  const groundY = resolveSpawnSurfaceY(state.terrain, x);
 
   return {
     id: `gravestone:${mercenary.id}`,
     mercenaryId: mercenary.id,
     playerId: mercenary.playerId,
     x,
-    y: groundY - gravestoneRadius - 6,
+    y: Math.min(mercenary.y, groundY - gravestoneRadius - 6),
     vx: clamp(mercenary.vx * 0.14, -90, 90),
     vy: -120,
     radius: gravestoneRadius,
@@ -1371,6 +1814,64 @@ function markProjectileSettling(state: ChaosKommandoRuntimeState, now: number): 
   };
 }
 
+function removeProjectileSilently(
+  state: ChaosKommandoRuntimeState,
+  projectile: RuntimeProjectileState,
+  now: number,
+  logEntry?: string
+): ChaosKommandoRuntimeState {
+  return markProjectileSettling(
+    {
+      ...state,
+      projectiles: state.projectiles.filter((entry) => entry.id !== projectile.id),
+      actionLog: logEntry ? pushActionLog(state.actionLog, logEntry) : state.actionLog,
+      updatedAt: now
+    },
+    now
+  );
+}
+
+function spawnBananaChildren(
+  state: ChaosKommandoRuntimeState,
+  projectile: RuntimeProjectileState,
+  now: number
+): ChaosKommandoRuntimeState {
+  const rng = createRng(state.seed ^ Math.round(projectile.x * 17 + projectile.y * 31));
+  const children: RuntimeProjectileState[] = Array.from({ length: 5 }, (_, index) => {
+    const angle = -Math.PI / 2 + (index - 2) * 0.42 + (rng() - 0.5) * 0.2;
+    const speed = 240 + rng() * 160;
+
+    return {
+      id: `${projectile.id}:child:${index}`,
+      weaponId: "banane" as const,
+      ownerPlayerId: projectile.ownerPlayerId,
+      ownerMercenaryId: projectile.ownerMercenaryId,
+      x: projectile.x,
+      y: projectile.y - 6,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      radius: 7,
+      ageMs: 0,
+      fuseMs: 1_050 + index * 130,
+      armed: true,
+      damage: 26,
+      blastRadius: 64,
+      craterDepth: 34,
+      gravityScale: 1.05,
+      windScale: 0,
+      splashColor: "#fde047",
+      bounceFactor: 0.55,
+      generation: 1
+    };
+  });
+
+  return {
+    ...state,
+    projectiles: [...state.projectiles, ...children],
+    updatedAt: now
+  };
+}
+
 function detonateProjectile(
   state: ChaosKommandoRuntimeState,
   projectile: RuntimeProjectileState,
@@ -1425,7 +1926,152 @@ function detonateProjectile(
     }
   }
 
+  if (projectile.weaponId === "banane" && projectile.generation === 0) {
+    explodedState = spawnBananaChildren(explodedState, projectile, now);
+  }
+
   return markProjectileSettling(explodedState, now);
+}
+
+function createProjectile(
+  id: string,
+  weaponId: ChaosKommandoWeaponId,
+  definition: ChaosKommandoWeaponDefinition,
+  owner: RuntimeMercenaryState,
+  x: number,
+  y: number,
+  vx: number,
+  vy: number,
+  overrides: Partial<RuntimeProjectileState> = {}
+): RuntimeProjectileState {
+  return {
+    id,
+    weaponId,
+    ownerPlayerId: owner.playerId,
+    ownerMercenaryId: owner.id,
+    x,
+    y,
+    vx,
+    vy,
+    radius: resolveProjectileRadius(weaponId),
+    ageMs: 0,
+    fuseMs: definition.fuseMs,
+    armed: false,
+    damage: definition.damage,
+    blastRadius: definition.blastRadius,
+    craterDepth: definition.craterDepth,
+    gravityScale: definition.gravityScale,
+    windScale: definition.windScale,
+    splashColor: definition.accentColor,
+    bounceFactor: resolveProjectileBounceFactor(weaponId),
+    generation: 0,
+    ...overrides
+  };
+}
+
+function buildFiredProjectiles(
+  state: ChaosKommandoRuntimeState,
+  mercenary: RuntimeMercenaryState,
+  weaponId: ChaosKommandoWeaponId,
+  definition: ChaosKommandoWeaponDefinition,
+  chargeRatio: number,
+  now: number
+): RuntimeProjectileState[] {
+  const angle = mercenary.aimAngleRad;
+  const launchSpeed = definition.projectileSpeed * chargeRatio;
+
+  if (weaponId === "dynamit") {
+    // Placed at the mercenary's feet: run!
+    return [
+      createProjectile(
+        `projectile:${now}:${mercenary.id}:0`,
+        weaponId,
+        definition,
+        mercenary,
+        mercenary.x + Math.cos(angle) * 6,
+        mercenary.y,
+        0,
+        -40,
+        { armed: true }
+      )
+    ];
+  }
+
+  if (weaponId === "luftschlag") {
+    // Four bombs raining down onto the aiming direction.
+    const targetX = clamp(
+      mercenary.x + Math.cos(angle) * 560,
+      120,
+      state.terrain.width - 120
+    );
+    const driftDirection = Math.cos(angle) >= 0 ? 1 : -1;
+
+    return Array.from({ length: 4 }, (_, index) =>
+      createProjectile(
+        `projectile:${now}:${mercenary.id}:${index}`,
+        weaponId,
+        definition,
+        mercenary,
+        targetX - driftDirection * 190 + driftDirection * index * 64,
+        -50 - index * 44,
+        driftDirection * 96,
+        150,
+        { armed: true }
+      )
+    );
+  }
+
+  if (weaponId === "konfetti-schrot") {
+    return [-0.18, -0.09, 0, 0.09, 0.18].map((spread, index) => {
+      const projectileAngle = angle + spread;
+      const speed = definition.projectileSpeed * (0.9 + index * 0.035);
+
+      return createProjectile(
+        `projectile:${now}:${mercenary.id}:${index}`,
+        weaponId,
+        definition,
+        mercenary,
+        mercenary.x + Math.cos(projectileAngle) * mercenary.radius * 1.35,
+        mercenary.y + Math.sin(projectileAngle) * mercenary.radius * 1.35,
+        Math.cos(projectileAngle) * speed,
+        Math.sin(projectileAngle) * speed
+      );
+    });
+  }
+
+  if (weaponId === "minigun") {
+    const rng = createRng(state.seed ^ now);
+
+    return Array.from({ length: 10 }, (_, index) => {
+      const projectileAngle = angle + (rng() - 0.5) * 0.11;
+      const speed = definition.projectileSpeed * (0.9 + rng() * 0.18);
+      const startOffset = mercenary.radius * 1.35 + index * 9;
+
+      return createProjectile(
+        `projectile:${now}:${mercenary.id}:${index}`,
+        weaponId,
+        definition,
+        mercenary,
+        mercenary.x + Math.cos(projectileAngle) * startOffset,
+        mercenary.y + Math.sin(projectileAngle) * startOffset,
+        Math.cos(projectileAngle) * speed,
+        Math.sin(projectileAngle) * speed
+      );
+    });
+  }
+
+  return [
+    createProjectile(
+      `projectile:${now}:${mercenary.id}:0`,
+      weaponId,
+      definition,
+      mercenary,
+      mercenary.x + Math.cos(angle) * mercenary.radius * 1.3,
+      mercenary.y + Math.sin(angle) * mercenary.radius * 1.3,
+      Math.cos(angle) * launchSpeed,
+      Math.sin(angle) * launchSpeed
+    )
+  ];
 }
 
 function fireActiveWeapon(
@@ -1454,38 +2100,94 @@ function fireActiveWeapon(
     };
   }
 
-  const angle = activeMercenary.aimAngleRad;
   const normalizedChargeRatio =
     definition.fireMode === "charged" ? clamp(chargeRatio, 0.25, 1) : 1;
-  const launchSpeed = definition.projectileSpeed * normalizedChargeRatio;
-  const spreadAngles = resolveShotSpreadAngles(weaponId);
-  const projectiles = spreadAngles.map((spreadAngle, projectileIndex): RuntimeProjectileState => {
-    const projectileAngle = angle + spreadAngle;
-    const pelletSpeedMultiplier = weaponId === "konfetti-schrot" ? 0.9 + projectileIndex * 0.035 : 1;
-    const startX = activeMercenary.x + Math.cos(projectileAngle) * activeMercenary.radius * 1.25;
-    const startY = activeMercenary.y + Math.sin(projectileAngle) * activeMercenary.radius * 1.25;
 
-    return {
-      id: `projectile:${now}:${activeMercenary.id}:${projectileIndex}`,
-      weaponId,
-      ownerPlayerId: activeMercenary.playerId,
-      ownerMercenaryId: activeMercenary.id,
-      x: startX,
-      y: startY,
-      vx: Math.cos(projectileAngle) * launchSpeed * pelletSpeedMultiplier,
-      vy: Math.sin(projectileAngle) * launchSpeed * pelletSpeedMultiplier,
-      radius: resolveProjectileRadius(weaponId),
-      ageMs: 0,
-      fuseMs: definition.fuseMs,
-      armed: false,
-      damage: definition.damage,
-      blastRadius: definition.blastRadius,
-      craterDepth: definition.craterDepth,
-      gravityScale: definition.gravityScale,
-      splashColor: definition.accentColor,
-      bounceFactor: resolveProjectileBounceFactor(weaponId)
+  // Baseball bat: pure melee knockback, resolved instantly without a projectile.
+  if (weaponId === "baseball-schlaeger") {
+    const angle = activeMercenary.aimAngleRad;
+    const hitX = activeMercenary.x + Math.cos(angle) * activeMercenary.radius * 1.7;
+    const hitY = activeMercenary.y + Math.sin(angle) * activeMercenary.radius * 1.7;
+    const consumedState: ChaosKommandoRuntimeState = {
+      ...state,
+      players: refreshPlayerSummaries(
+        state.players.map((player) => ({
+          ...player,
+          mercenaries: player.mercenaries.map((mercenary) =>
+            mercenary.id === activeMercenary.id
+              ? {
+                  ...mercenary,
+                  ammo: {
+                    ...mercenary.ammo,
+                    [weaponId]: Math.max(0, (mercenary.ammo[weaponId] ?? 0) - 1)
+                  },
+                  facing: Math.cos(angle) >= 0 ? ("right" as const) : ("left" as const),
+                  moveInputX: 0
+                }
+              : mercenary
+          )
+        }))
+      ),
+      turn: {
+        ...state.turn,
+        currentWeaponId: weaponId,
+        hasFired: true,
+        resolvingShot: true,
+        chargeStartedAt: null,
+        chargeRatio: 0,
+        settleEndsAt: null
+      },
+      actionLog: pushActionLog(
+        state.actionLog,
+        `${activeMercenary.name} holt mit dem ${definition.displayName} aus!`
+      ),
+      updatedAt: now
     };
-  });
+    const smackedState = applyExplosion(
+      consumedState,
+      hitX,
+      hitY,
+      definition,
+      now,
+      activeMercenary.playerId,
+      weaponId,
+      {
+        pushStrength: 540,
+        pushAngleRad: angle - 0.35 * Math.sign(Math.cos(angle) || 1) * 0
+      }
+    );
+    // The batter never smacks themselves off the map.
+    const protectedState: ChaosKommandoRuntimeState = {
+      ...smackedState,
+      players: smackedState.players.map((player) => ({
+        ...player,
+        mercenaries: player.mercenaries.map((mercenary) =>
+          mercenary.id === activeMercenary.id
+            ? {
+                ...mercenary,
+                hp: activeMercenary.hp,
+                alive: activeMercenary.alive,
+                vx: activeMercenary.vx,
+                vy: activeMercenary.vy,
+                grounded: activeMercenary.grounded,
+                airborneFromY: null
+              }
+            : mercenary
+        )
+      }))
+    };
+
+    return markProjectileSettling(protectedState, now);
+  }
+
+  const projectiles = buildFiredProjectiles(
+    state,
+    activeMercenary,
+    weaponId,
+    definition,
+    normalizedChargeRatio,
+    now
+  );
   const nextPlayers = state.players.map((player) => ({
     ...player,
     mercenaries: player.mercenaries.map((mercenary) =>
@@ -1496,7 +2198,7 @@ function fireActiveWeapon(
               ...mercenary.ammo,
               [weaponId]: Math.max(0, (mercenary.ammo[weaponId] ?? 0) - 1)
             },
-            facing: Math.cos(angle) >= 0 ? ("right" as const) : ("left" as const),
+            facing: Math.cos(activeMercenary.aimAngleRad) >= 0 ? ("right" as const) : ("left" as const),
             moveInputX: 0
           }
         : mercenary
@@ -1533,6 +2235,30 @@ function fireActiveWeapon(
   };
 }
 
+/** Approximate the terrain surface normal at a collision point. */
+function resolveSurfaceNormal(
+  terrain: ChaosKommandoTerrainState,
+  x: number,
+  y: number
+): { x: number; y: number } {
+  let nx = 0;
+  let ny = 0;
+  const probe = 6;
+
+  if (isTerrainSolid(terrain, x - probe, y)) nx += 1;
+  if (isTerrainSolid(terrain, x + probe, y)) nx -= 1;
+  if (isTerrainSolid(terrain, x, y - probe)) ny += 1;
+  if (isTerrainSolid(terrain, x, y + probe)) ny -= 1;
+
+  const magnitude = Math.hypot(nx, ny);
+
+  if (magnitude < 0.001) {
+    return { x: 0, y: -1 };
+  }
+
+  return { x: nx / magnitude, y: ny / magnitude };
+}
+
 function updateProjectile(
   state: ChaosKommandoRuntimeState,
   projectile: RuntimeProjectileState,
@@ -1540,17 +2266,88 @@ function updateProjectile(
   now: number
 ): ChaosKommandoRuntimeState {
   const seconds = deltaMs / 1000;
-  const windPush = state.wind.direction * state.wind.strength * 65;
+  const windPush = state.wind.direction * state.wind.strength * 78;
   const nextProjectile: RuntimeProjectileState = {
     ...projectile,
     ageMs: projectile.ageMs + deltaMs,
-    vx: projectile.vx + windPush * seconds * projectile.gravityScale,
+    vx: projectile.vx + windPush * seconds * projectile.windScale,
     vy: projectile.vy + gravity * projectile.gravityScale * seconds
   };
+  const terrain = state.terrain;
+  const text = chaosKommandoText[state.language];
 
-  nextProjectile.x += nextProjectile.vx * seconds;
-  nextProjectile.y += nextProjectile.vy * seconds;
-  nextProjectile.armed = nextProjectile.ageMs > 150;
+  nextProjectile.armed = nextProjectile.armed || nextProjectile.ageMs > 120;
+
+  // Fuse weapons detonate mid-air once the timer runs out.
+  if (nextProjectile.fuseMs !== null && nextProjectile.ageMs >= nextProjectile.fuseMs) {
+    return detonateProjectile(state, nextProjectile, now);
+  }
+
+  // Substepped movement so fast shots cannot tunnel through thin walls.
+  const speed = Math.hypot(nextProjectile.vx, nextProjectile.vy);
+  const travel = speed * seconds;
+  const steps = Math.max(1, Math.min(48, Math.ceil(travel / 6)));
+  const stepSeconds = seconds / steps;
+  const bouncy = isBouncyWeapon(nextProjectile.weaponId) || nextProjectile.generation > 0;
+
+  for (let step = 0; step < steps; step += 1) {
+    nextProjectile.x += nextProjectile.vx * stepSeconds;
+    nextProjectile.y += nextProjectile.vy * stepSeconds;
+
+    // Water swallows everything without a bang.
+    if (nextProjectile.y > terrain.waterlineY + 8) {
+      return removeProjectileSilently(
+        state,
+        nextProjectile,
+        now,
+        text.splash(findWeaponDefinition(nextProjectile.weaponId).displayName)
+      );
+    }
+
+    if (
+      nextProjectile.x < -60 ||
+      nextProjectile.x > terrain.width + 60 ||
+      nextProjectile.y > terrain.height + 80
+    ) {
+      return removeProjectileSilently(state, nextProjectile, now);
+    }
+
+    const velocityMagnitude = Math.max(1, Math.hypot(nextProjectile.vx, nextProjectile.vy));
+    const leadX = nextProjectile.x + (nextProjectile.vx / velocityMagnitude) * nextProjectile.radius * 0.8;
+    const leadY = nextProjectile.y + (nextProjectile.vy / velocityMagnitude) * nextProjectile.radius * 0.8;
+
+    if (isTerrainSolid(terrain, leadX, leadY) || isTerrainSolid(terrain, nextProjectile.x, nextProjectile.y)) {
+      if (!bouncy && nextProjectile.weaponId !== "seifenblasen-bombe") {
+        return detonateProjectile(state, nextProjectile, now);
+      }
+
+      // Push the projectile back out of the wall.
+      for (let unstick = 0; unstick < 14; unstick += 1) {
+        if (!isTerrainSolid(terrain, nextProjectile.x, nextProjectile.y)) {
+          break;
+        }
+
+        nextProjectile.x -= (nextProjectile.vx / velocityMagnitude) * 2.4;
+        nextProjectile.y -= (nextProjectile.vy / velocityMagnitude) * 2.4;
+      }
+
+      const normal = resolveSurfaceNormal(terrain, leadX, leadY);
+      const dot = nextProjectile.vx * normal.x + nextProjectile.vy * normal.y;
+      const bounceFactor =
+        nextProjectile.weaponId === "seifenblasen-bombe" ? 0.24 : nextProjectile.bounceFactor;
+
+      nextProjectile.vx = (nextProjectile.vx - 2 * dot * normal.x) * bounceFactor;
+      nextProjectile.vy = (nextProjectile.vy - 2 * dot * normal.y) * bounceFactor;
+
+      // Kill tiny jitter bounces so grenades come to rest.
+      if (Math.hypot(nextProjectile.vx, nextProjectile.vy) < 26) {
+        nextProjectile.vx = 0;
+        nextProjectile.vy = 0;
+      }
+
+      break;
+    }
+  }
 
   const hitGravestone = state.gravestones.find(
     (gravestone) =>
@@ -1570,38 +2367,13 @@ function updateProjectile(
     );
   }
 
-  if (
-    nextProjectile.x < -40 ||
-    nextProjectile.x > state.terrain.width + 40 ||
-    nextProjectile.y > state.terrain.height + 80
-  ) {
-    return detonateProjectile(state, nextProjectile, now);
-  }
+  const hitMine = state.mines.find(
+    (mine) =>
+      Math.hypot(mine.x - nextProjectile.x, mine.y - nextProjectile.y) <=
+      mine.radius + nextProjectile.radius + 2
+  );
 
-  const groundY = resolveGroundY(state.terrain, nextProjectile.x);
-
-  if (isBouncyWeapon(nextProjectile.weaponId)) {
-    if (nextProjectile.y + nextProjectile.radius >= groundY) {
-      nextProjectile.y = groundY - nextProjectile.radius;
-      nextProjectile.vy = -Math.abs(nextProjectile.vy) * nextProjectile.bounceFactor;
-      nextProjectile.vx *= nextProjectile.weaponId === "gummi-huhn" ? 0.86 : 0.76;
-    }
-
-    if (nextProjectile.fuseMs !== null && nextProjectile.ageMs >= nextProjectile.fuseMs) {
-      return detonateProjectile(state, nextProjectile, now);
-    }
-  } else if (nextProjectile.weaponId === "seifenblasen-bombe") {
-    if (nextProjectile.fuseMs !== null && nextProjectile.ageMs >= nextProjectile.fuseMs) {
-      return detonateProjectile(state, nextProjectile, now);
-    }
-
-    if (nextProjectile.y + nextProjectile.radius >= groundY) {
-      nextProjectile.y = groundY - nextProjectile.radius;
-      nextProjectile.vx *= 0.68;
-      nextProjectile.vy = -Math.abs(nextProjectile.vy) * 0.24;
-    }
-  } else if (nextProjectile.y + nextProjectile.radius >= groundY) {
-    nextProjectile.y = groundY - nextProjectile.radius;
+  if (hitMine && nextProjectile.armed) {
     return detonateProjectile(state, nextProjectile, now);
   }
 
@@ -1615,6 +2387,11 @@ function updateProjectile(
       const dy = mercenary.y - nextProjectile.y;
 
       if (Math.hypot(dx, dy) <= mercenary.radius + nextProjectile.radius) {
+        if (isBouncyWeapon(nextProjectile.weaponId) && nextProjectile.fuseMs !== null) {
+          // Grenades bounce off worms instead of detonating on contact.
+          continue;
+        }
+
         return detonateProjectile(state, nextProjectile, now);
       }
     }
@@ -1627,49 +2404,77 @@ function updateProjectile(
   };
 }
 
-function applyCrowdHop(players: RuntimePlayerState[], activeMercenaryId: string): RuntimePlayerState[] {
-  const allMercenaries = players.flatMap((player) => player.mercenaries).filter((mercenary) => mercenary.alive);
-  const activeMercenary = allMercenaries.find((mercenary) => mercenary.id === activeMercenaryId);
+interface PhysicsBody {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  grounded: boolean;
+}
 
-  if (!activeMercenary?.grounded || Math.abs(activeMercenary.moveInputX) < 0.18) {
-    return players;
-  }
+/**
+ * Shared circle-vs-terrain physics for gravestones, mines and crates.
+ */
+function applyBodyPhysics<T extends PhysicsBody>(
+  body: T,
+  terrain: ChaosKommandoTerrainState,
+  seconds: number,
+  options: { bounce: number; groundFriction: number; parachute?: boolean }
+): T {
+  const next = { ...body };
+  const terrainLeft = next.radius + 8;
+  const terrainRight = terrain.width - next.radius - 8;
 
-  const blocker = allMercenaries.find((mercenary) => {
-    if (mercenary.id === activeMercenary.id) {
-      return false;
+  if (next.grounded) {
+    next.vx *= options.groundFriction;
+    next.x = clamp(next.x + next.vx * seconds, terrainLeft, terrainRight);
+
+    if (!isTerrainSolid(terrain, next.x, next.y + next.radius + 4)) {
+      const surface = findSurfaceBelow(terrain, next.x, next.y + next.radius, next.y + next.radius + 10);
+
+      if (surface !== null) {
+        next.y = surface - next.radius;
+      } else {
+        next.grounded = false;
+      }
     }
 
-    const dx = mercenary.x - activeMercenary.x;
-    const dy = Math.abs(mercenary.y - activeMercenary.y);
-    const movingTowardBlocker = Math.sign(activeMercenary.moveInputX) === Math.sign(dx) || Math.abs(dx) < activeMercenary.radius * 0.7;
-
-    return (
-      movingTowardBlocker &&
-      Math.abs(dx) < activeMercenary.radius * 1.9 &&
-      dy < activeMercenary.radius * 1.35
-    );
-  });
-
-  if (!blocker) {
-    return players;
+    return next;
   }
 
-  return players.map((player) => ({
-    ...player,
-    mercenaries: player.mercenaries.map((mercenary) =>
-      mercenary.id === activeMercenary.id
-        ? {
-            ...mercenary,
-            grounded: false,
-            vy: Math.min(mercenary.vy, jumpVelocity * 0.7),
-            vx: mercenary.vx + Math.sign(mercenary.moveInputX) * 58,
-            y: mercenary.y - 4,
-            airborneFromY: mercenary.y
-          }
-        : mercenary
-    )
-  }));
+  next.vx *= 0.995;
+  next.vy += gravity * seconds * (options.parachute ? 0.1 : 1);
+
+  if (options.parachute) {
+    next.vy = Math.min(next.vy, 74);
+  }
+
+  next.x = clamp(next.x + next.vx * seconds, terrainLeft, terrainRight);
+  next.y += next.vy * seconds;
+
+  if (isTerrainSolid(terrain, next.x, next.y + next.radius)) {
+    let landingY = next.y;
+
+    for (let lift = 0; lift < 40; lift += 2) {
+      if (!isTerrainSolid(terrain, next.x, landingY + next.radius)) {
+        break;
+      }
+
+      landingY -= 2;
+    }
+
+    next.y = landingY;
+    next.vx *= 0.6;
+    next.vy = -Math.abs(next.vy) * options.bounce;
+
+    if (Math.abs(next.vy) < 34) {
+      next.vy = 0;
+      next.grounded = true;
+    }
+  }
+
+  return next;
 }
 
 function applyGravestonePhysics(
@@ -1682,50 +2487,173 @@ function applyGravestonePhysics(
   }
 
   const seconds = Math.max(0.001, deltaMs / 1000);
-  const nextGravestones = state.gravestones.map((gravestone) => {
-    let nextGravestone = { ...gravestone };
-    const terrainLeft = nextGravestone.radius + 8;
-    const terrainRight = state.terrain.width - nextGravestone.radius - 8;
-
-    if (nextGravestone.grounded) {
-      nextGravestone.vx *= 0.84;
-      nextGravestone.x = clamp(nextGravestone.x + nextGravestone.vx * seconds, terrainLeft, terrainRight);
-      const groundY = resolveGroundY(state.terrain, nextGravestone.x);
-      const dropDistance = groundY - (nextGravestone.y + nextGravestone.radius);
-
-      if (dropDistance > 10) {
-        nextGravestone.grounded = false;
-      } else {
-        nextGravestone.y = groundY - nextGravestone.radius;
-        nextGravestone.vy = 0;
-      }
-    }
-
-    if (!nextGravestone.grounded) {
-      nextGravestone.vx *= 0.993;
-      nextGravestone.vy += gravity * seconds;
-      nextGravestone.x = clamp(nextGravestone.x + nextGravestone.vx * seconds, terrainLeft, terrainRight);
-      nextGravestone.y += nextGravestone.vy * seconds;
-      const groundY = resolveGroundY(state.terrain, nextGravestone.x);
-
-      if (nextGravestone.y + nextGravestone.radius >= groundY) {
-        nextGravestone.y = groundY - nextGravestone.radius;
-        nextGravestone.vx *= 0.62;
-        nextGravestone.vy = -Math.abs(nextGravestone.vy) * 0.22;
-
-        if (Math.abs(nextGravestone.vy) < 34) {
-          nextGravestone.vy = 0;
-          nextGravestone.grounded = true;
-        }
-      }
-    }
-
-    return nextGravestone;
-  });
+  const nextGravestones = state.gravestones.map((gravestone) =>
+    applyBodyPhysics(gravestone, state.terrain, seconds, { bounce: 0.22, groundFriction: 0.84 })
+  );
 
   return {
     ...state,
     gravestones: nextGravestones,
+    updatedAt: now
+  };
+}
+
+function applyMinePhysics(
+  state: ChaosKommandoRuntimeState,
+  deltaMs: number,
+  now: number
+): ChaosKommandoRuntimeState {
+  if (state.mines.length === 0) {
+    return state;
+  }
+
+  const seconds = Math.max(0.001, deltaMs / 1000);
+  const text = chaosKommandoText[state.language];
+  let logMineTriggered = false;
+  let nextState = state;
+  const survivingMines: RuntimeMineState[] = [];
+
+  for (const mine of state.mines) {
+    let nextMine = applyBodyPhysics(mine, nextState.terrain, seconds, {
+      bounce: 0.28,
+      groundFriction: 0.86
+    });
+
+    // Mines sink and drown once the water reaches them.
+    if (nextMine.y > nextState.terrain.waterlineY + 20) {
+      continue;
+    }
+
+    if (nextMine.explodesAt === null) {
+      const proximityTarget = nextState.players
+        .flatMap((player) => player.mercenaries)
+        .find(
+          (mercenary) =>
+            mercenary.alive &&
+            Math.hypot(mercenary.x - nextMine.x, mercenary.y - nextMine.y) <=
+              mineTriggerDistance
+        );
+
+      if (proximityTarget) {
+        nextMine = { ...nextMine, explodesAt: now + mineFuseMs };
+        logMineTriggered = true;
+      }
+    }
+
+    if (nextMine.explodesAt !== null && now >= nextMine.explodesAt) {
+      const mineDefinition: ChaosKommandoWeaponDefinition = {
+        id: "enten-granate",
+        displayName: "Mine",
+        description: "Boese Ueberraschung im Boden.",
+        iconPath: "",
+        accentColor: "#f87171",
+        fireMode: "instant",
+        damage: mineDamage,
+        blastRadius: mineBlastRadius,
+        projectileSpeed: 0,
+        gravityScale: 1,
+        windScale: 0,
+        fuseMs: null,
+        craterDepth: 44
+      };
+
+      nextState = applyExplosion(
+        nextState,
+        nextMine.x,
+        nextMine.y,
+        mineDefinition,
+        now,
+        state.turn.currentPlayerId,
+        "mine"
+      );
+      continue;
+    }
+
+    survivingMines.push(nextMine);
+  }
+
+  return {
+    ...nextState,
+    mines: survivingMines,
+    actionLog: logMineTriggered
+      ? pushActionLog(nextState.actionLog, text.mineTriggered)
+      : nextState.actionLog,
+    updatedAt: now
+  };
+}
+
+function applyCratePhysics(
+  state: ChaosKommandoRuntimeState,
+  deltaMs: number,
+  now: number
+): ChaosKommandoRuntimeState {
+  if (state.crates.length === 0) {
+    return state;
+  }
+
+  const seconds = Math.max(0.001, deltaMs / 1000);
+  const text = chaosKommandoText[state.language];
+  let nextState = state;
+  const survivingCrates: RuntimeCrateState[] = [];
+
+  for (const crate of state.crates) {
+    const nextCrate = applyBodyPhysics(crate, nextState.terrain, seconds, {
+      bounce: 0.1,
+      groundFriction: 0.8,
+      parachute: !crate.grounded
+    });
+
+    if (nextCrate.y > nextState.terrain.waterlineY + 14) {
+      continue;
+    }
+
+    const collector = nextState.players
+      .flatMap((player) => player.mercenaries)
+      .find(
+        (mercenary) =>
+          mercenary.alive &&
+          Math.hypot(mercenary.x - nextCrate.x, mercenary.y - nextCrate.y) <=
+            mercenary.radius + nextCrate.radius + 4
+      );
+
+    if (collector) {
+      const weaponName = localizeWeaponDefinition(
+        findWeaponDefinition(nextCrate.weaponId),
+        nextState.language
+      ).displayName;
+
+      nextState = {
+        ...nextState,
+        players: nextState.players.map((player) => ({
+          ...player,
+          mercenaries: player.mercenaries.map((mercenary) =>
+            mercenary.id === collector.id
+              ? {
+                  ...mercenary,
+                  ammo: {
+                    ...mercenary.ammo,
+                    [nextCrate.weaponId]:
+                      (mercenary.ammo[nextCrate.weaponId] ?? 0) + nextCrate.amount
+                  }
+                }
+              : mercenary
+          )
+        })),
+        actionLog: pushActionLog(
+          nextState.actionLog,
+          text.crateCollected(collector.name, weaponName, nextCrate.amount)
+        ),
+        updatedAt: now
+      };
+      continue;
+    }
+
+    survivingCrates.push(nextCrate);
+  }
+
+  return {
+    ...nextState,
+    crates: survivingCrates,
     updatedAt: now
   };
 }
@@ -1736,69 +2664,145 @@ function applyMercenaryPhysics(
   now: number
 ): ChaosKommandoRuntimeState {
   const seconds = Math.max(0.001, deltaMs / 1000);
+  const terrain = state.terrain;
+  const text = chaosKommandoText[state.language];
+  let drownedName: string | null = null;
   const nextPlayers = state.players.map((player) => ({
     ...player,
     mercenaries: player.mercenaries.map((mercenary) => {
+      // Worms style: the active worm may also move while the shot resolves (retreat).
       const isActiveMercenary =
         mercenary.alive &&
         mercenary.id === state.turn.activeMercenaryId &&
-        player.playerId === state.turn.currentPlayerId &&
-        !state.turn.hasFired &&
-        !state.turn.resolvingShot;
-      let nextMercenary = { ...mercenary };
+        player.playerId === state.turn.currentPlayerId;
+      const nextMercenary = { ...mercenary };
       const terrainLeft = nextMercenary.radius + 8;
-      const terrainRight = state.terrain.width - nextMercenary.radius - 8;
+      const terrainRight = terrain.width - nextMercenary.radius - 8;
 
       if (nextMercenary.grounded) {
-        if (isActiveMercenary) {
+        if (isActiveMercenary && Math.abs(nextMercenary.moveInputX) > 0.12) {
+          const direction = Math.sign(nextMercenary.moveInputX);
           nextMercenary.vx = nextMercenary.moveInputX * walkSpeed;
-          if (nextMercenary.moveInputX > 0.1) {
-            nextMercenary.facing = "right";
-          } else if (nextMercenary.moveInputX < -0.1) {
-            nextMercenary.facing = "left";
+          nextMercenary.facing = direction > 0 ? "right" : "left";
+
+          const targetX = clamp(
+            nextMercenary.x + nextMercenary.vx * seconds,
+            terrainLeft,
+            terrainRight
+          );
+          const feetY = nextMercenary.y + nextMercenary.radius;
+          // Worms cannot walk through walls or up cliffs: head clearance first.
+          const blockedByWall =
+            isTerrainSolid(terrain, targetX + direction * nextMercenary.radius * 0.5, nextMercenary.y - nextMercenary.radius * 0.35) ||
+            isTerrainSolid(terrain, targetX, nextMercenary.y - nextMercenary.radius * 0.85);
+
+          if (!blockedByWall) {
+            const surface = findSurfaceBelow(
+              terrain,
+              targetX,
+              feetY - stepUpHeight,
+              feetY + stepDownHeight
+            );
+
+            if (surface === null) {
+              // Walked off a ledge.
+              nextMercenary.x = targetX;
+              nextMercenary.grounded = false;
+              nextMercenary.airborneFromY = nextMercenary.y;
+            } else {
+              nextMercenary.x = targetX;
+              nextMercenary.y = surface - nextMercenary.radius;
+            }
+          } else {
+            nextMercenary.vx = 0;
           }
         } else {
-          nextMercenary.vx *= 0.65;
-        }
+          nextMercenary.vx *= 0.6;
 
-        nextMercenary.x = clamp(nextMercenary.x + nextMercenary.vx * seconds, terrainLeft, terrainRight);
-        const groundY = resolveGroundY(state.terrain, nextMercenary.x);
-        const dropDistance = groundY - (nextMercenary.y + nextMercenary.radius);
+          if (!isTerrainSolid(terrain, nextMercenary.x, nextMercenary.y + nextMercenary.radius + 5)) {
+            const surface = findSurfaceBelow(
+              terrain,
+              nextMercenary.x,
+              nextMercenary.y + nextMercenary.radius,
+              nextMercenary.y + nextMercenary.radius + 12
+            );
 
-        if (dropDistance > 12) {
-          nextMercenary.grounded = false;
-          nextMercenary.airborneFromY = nextMercenary.y;
-        } else {
-          nextMercenary.y = groundY - nextMercenary.radius;
-          nextMercenary.vy = 0;
+            if (surface !== null) {
+              nextMercenary.y = surface - nextMercenary.radius;
+            } else {
+              nextMercenary.grounded = false;
+              nextMercenary.airborneFromY = nextMercenary.y;
+            }
+          }
         }
       }
 
       if (!nextMercenary.grounded) {
         nextMercenary.vx *= 0.995;
         nextMercenary.vy += gravity * seconds;
-        nextMercenary.x = clamp(nextMercenary.x + nextMercenary.vx * seconds, terrainLeft, terrainRight);
-        nextMercenary.y += nextMercenary.vy * seconds;
-        const groundY = resolveGroundY(state.terrain, nextMercenary.x);
 
-        if (nextMercenary.y + nextMercenary.radius >= groundY) {
-          const airborneFromY = nextMercenary.airborneFromY ?? nextMercenary.y;
-          const fallDistance = groundY - airborneFromY;
-          const fallDamage =
-            nextMercenary.alive && fallDistance > 120 ? Math.round((fallDistance - 120) * 0.14) : 0;
-          const nextHp = Math.max(0, nextMercenary.hp - fallDamage);
+        const travel = Math.hypot(nextMercenary.vx, nextMercenary.vy) * seconds;
+        const steps = Math.max(1, Math.min(24, Math.ceil(travel / 5)));
+        const stepSeconds = seconds / steps;
 
-          nextMercenary.y = groundY - nextMercenary.radius;
-          nextMercenary.vy = 0;
-          nextMercenary.vx *= 0.52;
-          nextMercenary.grounded = true;
-          nextMercenary.airborneFromY = null;
-          nextMercenary.hp = nextHp;
-          nextMercenary.alive = nextMercenary.alive ? nextHp > 0 : false;
+        for (let step = 0; step < steps; step += 1) {
+          const previousX = nextMercenary.x;
+          nextMercenary.x = clamp(nextMercenary.x + nextMercenary.vx * stepSeconds, terrainLeft, terrainRight);
+          nextMercenary.y += nextMercenary.vy * stepSeconds;
+
+          // Ceiling bump inside tunnels.
+          if (nextMercenary.vy < 0 && isTerrainSolid(terrain, nextMercenary.x, nextMercenary.y - nextMercenary.radius)) {
+            nextMercenary.y += 3;
+            nextMercenary.vy = Math.abs(nextMercenary.vy) * 0.12;
+          }
+
+          // Side walls kill horizontal momentum.
+          if (
+            Math.abs(nextMercenary.vx) > 4 &&
+            isTerrainSolid(
+              terrain,
+              nextMercenary.x + Math.sign(nextMercenary.vx) * nextMercenary.radius * 0.8,
+              nextMercenary.y
+            )
+          ) {
+            nextMercenary.x = previousX;
+            nextMercenary.vx *= -0.24;
+          }
+
+          if (nextMercenary.vy >= 0 && isTerrainSolid(terrain, nextMercenary.x, nextMercenary.y + nextMercenary.radius)) {
+            let landingY = nextMercenary.y;
+
+            for (let lift = 0; lift < 44; lift += 2) {
+              if (!isTerrainSolid(terrain, nextMercenary.x, landingY + nextMercenary.radius)) {
+                break;
+              }
+
+              landingY -= 2;
+            }
+
+            const airborneFromY = nextMercenary.airborneFromY ?? nextMercenary.y;
+            const fallDistance = landingY - airborneFromY;
+            const fallDamage =
+              nextMercenary.alive && fallDistance > 110 ? Math.round((fallDistance - 110) * 0.16) : 0;
+
+            nextMercenary.y = landingY;
+            nextMercenary.vy = 0;
+            nextMercenary.vx *= 0.45;
+            nextMercenary.grounded = true;
+            nextMercenary.airborneFromY = null;
+            nextMercenary.hp = Math.max(0, nextMercenary.hp - fallDamage);
+            nextMercenary.alive = nextMercenary.alive ? nextMercenary.hp > 0 : false;
+            break;
+          }
         }
       }
 
-      if (nextMercenary.y - nextMercenary.radius > state.terrain.waterlineY + 52) {
+      // Rising water: touching the waterline means drowning, Worms style.
+      if (nextMercenary.y + nextMercenary.radius * 0.4 > terrain.waterlineY) {
+        if (nextMercenary.alive) {
+          drownedName = nextMercenary.name;
+        }
+
         nextMercenary.hp = 0;
         nextMercenary.alive = false;
       }
@@ -1807,12 +2811,14 @@ function applyMercenaryPhysics(
     })
   }));
 
-  const crowdAdjustedPlayers = applyCrowdHop(nextPlayers, state.turn.activeMercenaryId);
-  const refreshedPlayers = refreshPlayerSummaries(crowdAdjustedPlayers);
+  const refreshedPlayers = refreshPlayerSummaries(nextPlayers);
   const nextState: ChaosKommandoRuntimeState = {
     ...state,
     players: refreshedPlayers,
     explosions: state.explosions.filter((explosion) => now - explosion.createdAt <= 950),
+    actionLog: drownedName
+      ? pushActionLog(state.actionLog, text.drowned(drownedName))
+      : state.actionLog,
     updatedAt: now
   };
   const focus = resolveCameraFocus(nextState);
@@ -1876,7 +2882,27 @@ function maybeAdvanceAfterShot(state: ChaosKommandoRuntimeState, now: number): C
     return winnerLocked;
   }
 
-  return resolveNextTurn(state, now, chaosKommandoText[state.language].smokeClears);
+  const activeMercenary = findMercenaryById(state, state.turn.activeMercenaryId);
+  const text = chaosKommandoText[state.language];
+
+  // Worms retreat: a short escape window before the next team takes over.
+  if (state.turn.retreatEndsAt === null && activeMercenary?.alive) {
+    return {
+      ...state,
+      turn: {
+        ...state.turn,
+        retreatEndsAt: now + retreatDurationMs
+      },
+      actionLog: pushActionLog(state.actionLog, text.retreat),
+      updatedAt: now
+    };
+  }
+
+  if (state.turn.retreatEndsAt !== null && now < state.turn.retreatEndsAt) {
+    return state;
+  }
+
+  return resolveNextTurn(state, now, text.smokeClears);
 }
 
 function buildPublicPlayers(players: RuntimePlayerState[]): ChaosKommandoPlayerState[] {
@@ -1899,7 +2925,27 @@ function buildPublicGravestones(gravestones: RuntimeGravestoneState[]): ChaosKom
 }
 
 function buildPublicProjectiles(projectiles: RuntimeProjectileState[]): ChaosKommandoProjectileState[] {
-  return projectiles.map(({ damage: _damage, blastRadius: _blastRadius, craterDepth: _craterDepth, gravityScale: _gravityScale, splashColor: _splashColor, bounceFactor: _bounceFactor, ...projectile }) => projectile);
+  return projectiles.map(
+    ({
+      damage: _damage,
+      blastRadius: _blastRadius,
+      craterDepth: _craterDepth,
+      gravityScale: _gravityScale,
+      windScale: _windScale,
+      splashColor: _splashColor,
+      bounceFactor: _bounceFactor,
+      generation: _generation,
+      ...projectile
+    }) => projectile
+  );
+}
+
+function buildPublicMines(mines: RuntimeMineState[]): ChaosKommandoMineState[] {
+  return mines.map((mine) => ({ ...mine }));
+}
+
+function buildPublicCrates(crates: RuntimeCrateState[]): ChaosKommandoCrateState[] {
+  return crates.map((crate) => ({ ...crate }));
 }
 
 function buildPublicTurn(turn: RuntimeTurnState): ChaosKommandoTurnState {
@@ -1916,9 +2962,10 @@ function buildControllerState(state: ChaosKommandoRuntimeState): ChaosKommandoSt
       height: state.terrain.height,
       waterlineY: state.terrain.waterlineY,
       sampleSpacing: state.terrain.sampleSpacing,
-      // The controller UI does not render terrain; omitting the heightmap
-      // keeps the 60 Hz controller stream dramatically smaller.
-      samples: []
+      // The controller UI does not render terrain; omitting the heightmap and
+      // craters keeps the 60 Hz controller stream dramatically smaller.
+      samples: [],
+      craters: []
     },
     players: buildPublicPlayers(state.players),
     turn: buildPublicTurn(state.turn),
@@ -1926,7 +2973,10 @@ function buildControllerState(state: ChaosKommandoRuntimeState): ChaosKommandoSt
     projectiles: [],
     explosions: [],
     gravestones: [],
+    mines: [],
+    crates: [],
     wind: state.wind,
+    suddenDeath: state.suddenDeath,
     winnerPlayerId: state.winnerPlayerId,
     winnerName: state.winnerName,
     isDraw: state.isDraw,
@@ -1978,7 +3028,10 @@ export const chaosKommandoServerGame: ServerGame<
       projectiles: [],
       explosions: [],
       gravestones: [],
+      mines: createMines(terrain, context.players.length || 2, seed),
+      crates: [],
       wind: buildWind(seed, context.language),
+      suddenDeath: false,
       isDraw: false,
       cameraFocusX: activeMercenary?.x ?? terrain.width / 2,
       cameraFocusY: activeMercenary?.y ?? terrain.height / 2,
@@ -2131,6 +3184,9 @@ export const chaosKommandoServerGame: ServerGame<
         return state;
       }
 
+      // Worms forward hop: jumps always carry momentum in facing direction.
+      const hopDirection = activeMercenary.facing === "right" ? 1 : -1;
+
       return syncTurnPresentation(
         {
           ...state,
@@ -2142,6 +3198,7 @@ export const chaosKommandoServerGame: ServerGame<
                     ...mercenary,
                     grounded: false,
                     vy: jumpVelocity,
+                    vx: mercenary.vx + hopDirection * jumpForwardBoost,
                     jumpReadyAt: (input.sentAt ?? context.now) + jumpCooldownMs,
                     airborneFromY: mercenary.y
                   }
@@ -2207,9 +3264,15 @@ export const chaosKommandoServerGame: ServerGame<
 
     let nextState = applyMercenaryPhysics(state, deltaMs, context.now);
     nextState = applyGravestonePhysics(nextState, deltaMs, context.now);
+    nextState = applyMinePhysics(nextState, deltaMs, context.now);
+    nextState = applyCratePhysics(nextState, deltaMs, context.now);
     nextState = resolveDeathSequences(nextState, context.now);
 
     for (const projectile of [...nextState.projectiles]) {
+      if (!nextState.projectiles.some((entry) => entry.id === projectile.id)) {
+        continue;
+      }
+
       nextState = updateProjectile(nextState, projectile, deltaMs, context.now);
       nextState = resolveDeathSequences(nextState, context.now);
 
@@ -2265,7 +3328,10 @@ export const chaosKommandoServerGame: ServerGame<
       projectiles: buildPublicProjectiles(state.projectiles),
       explosions: state.explosions,
       gravestones: buildPublicGravestones(state.gravestones),
+      mines: buildPublicMines(state.mines),
+      crates: buildPublicCrates(state.crates),
       wind: state.wind,
+      suddenDeath: state.suddenDeath,
       winnerPlayerId: state.winnerPlayerId,
       winnerName: state.winnerName,
       isDraw: state.isDraw,

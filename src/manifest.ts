@@ -3,7 +3,7 @@ import type { GameManifest } from "@open-party-lab/game-core";
 export const chaosKommandoManifest = {
   id: "chaos-kommando",
   displayName: "Chaos-Kommando",
-  description: "Rundenbasierte Cartoon-Artillerie mit Mini-Soeldnern, irren Waffen und fiesen Cratern.",
+  description: "Marshmallow-Runden-Artillerie: geroestete Kommandos, 16 Waffen, Minen, Kisten und komplett zerstoerbares Terrain mit Tunneln.",
   minPlayers: 2,
   maxPlayers: 4,
   hostView: "ChaosKommandoHostScene",

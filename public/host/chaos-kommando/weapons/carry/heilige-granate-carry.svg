@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs><radialGradient id="holyGold" cx="30%" cy="22%"><stop stop-color="#fff7b2"/><stop offset=".5" stop-color="#facc15"/><stop offset="1" stop-color="#a16207"/></radialGradient></defs>
+  <g stroke="#3f2c12" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <circle cx="126" cy="143" r="69" fill="url(#holyGold)"/>
+    <path d="M96 91c22-18 55-16 73 1" fill="none" stroke="#fff9cf" stroke-width="5" opacity=".7"/>
+    <path d="M126 72V27M103 48h46" stroke="#b45309" stroke-width="13"/>
+    <path d="M126 72V27M103 48h46" stroke="#fde68a" stroke-width="6"/>
+    <path d="M83 139h86M126 102v82" stroke="#92400e" stroke-width="9" opacity=".7"/>
+    <circle cx="98" cy="116" r="14" fill="#fff7d6" stroke="none" opacity=".46"/>
+    <path d="M185 90c20-19 39-18 49-4" fill="none" stroke="#94a3b8"/>
+    <circle cx="232" cy="88" r="12" fill="none" stroke="#cbd5e1"/>
+  </g>
+</svg>

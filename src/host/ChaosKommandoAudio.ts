@@ -95,7 +95,7 @@ export class ChaosKommandoAudioRig {
       currentWeapon?.fireMode === "charged" &&
       !state.turn.hasFired &&
       !state.turn.resolvingShot &&
-      state.turn.chargeRatio > 0.01;
+      state.turn.chargeStartedAt !== null;
 
     if (!shouldCharge) {
       this.stopChargeLoop();
@@ -115,13 +115,13 @@ export class ChaosKommandoAudioRig {
       gain.gain.setValueAtTime(0.0001, context.currentTime);
       const filter = context.createBiquadFilter();
       filter.type = "lowpass";
-      filter.frequency.setValueAtTime(1_600, context.currentTime);
+      filter.frequency.setValueAtTime(1_050, context.currentTime);
       const carrier = context.createOscillator();
-      carrier.type = "triangle";
-      carrier.frequency.setValueAtTime(160, context.currentTime);
+      carrier.type = "sine";
+      carrier.frequency.setValueAtTime(120, context.currentTime);
       const shimmer = context.createOscillator();
-      shimmer.type = "sine";
-      shimmer.frequency.setValueAtTime(320, context.currentTime);
+      shimmer.type = "triangle";
+      shimmer.frequency.setValueAtTime(240, context.currentTime);
       carrier.connect(filter);
       shimmer.connect(filter);
       filter.connect(gain);
@@ -134,10 +134,10 @@ export class ChaosKommandoAudioRig {
     const ratio = Math.max(0, Math.min(1, state.turn.chargeRatio));
     const now = context.currentTime;
 
-    this.chargeNodes.carrier.frequency.setTargetAtTime(150 + ratio * 260, now, 0.04);
-    this.chargeNodes.shimmer.frequency.setTargetAtTime(300 + ratio * 520, now, 0.04);
-    this.chargeNodes.filter.frequency.setTargetAtTime(1_200 + ratio * 2_800, now, 0.05);
-    this.chargeNodes.gain.gain.setTargetAtTime(0.012 + ratio * 0.05, now, 0.03);
+    this.chargeNodes.carrier.frequency.setTargetAtTime(120 + ratio * 250, now, 0.075);
+    this.chargeNodes.shimmer.frequency.setTargetAtTime(240 + ratio * 500, now, 0.075);
+    this.chargeNodes.filter.frequency.setTargetAtTime(950 + ratio * 2_050, now, 0.09);
+    this.chargeNodes.gain.gain.setTargetAtTime(0.01 + ratio * 0.034, now, 0.065);
   }
 
   private stopChargeLoop(): void {
@@ -200,6 +200,30 @@ export class ChaosKommandoAudioRig {
         this.playTone("triangle", 180, 92, 0.24, 0.08);
         this.playNoiseBurst(0.05, 0.03, 1_700, 500);
         break;
+      case "dynamit":
+        this.playNoiseBurst(0.06, 0.03, 3_200, 900);
+        this.playTone("sine", 620, 540, 0.1, 0.06);
+        break;
+      case "heilige-granate":
+        this.playTone("sine", 523, 660, 0.24, 0.1);
+        this.playTone("sine", 659, 784, 0.2, 0.08);
+        break;
+      case "banane":
+        this.playTone("triangle", 540, 760, 0.16, 0.07);
+        this.playNoiseBurst(0.04, 0.03, 4_400, 1_800);
+        break;
+      case "luftschlag":
+        this.playTone("sawtooth", 240, 120, 0.4, 0.06);
+        this.playNoiseBurst(0.24, 0.08, 1_400, 400);
+        break;
+      case "baseball-schlaeger":
+        this.playNoiseBurst(0.05, 0.045, 2_600, 700);
+        this.playTone("square", 190, 90, 0.1, 0.09);
+        break;
+      case "minigun":
+        this.playNoiseBurst(0.04, 0.035, 5_000, 2_000);
+        this.playTone("square", 760, 320, 0.05, 0.05);
+        break;
     }
   }
 
@@ -250,6 +274,35 @@ export class ChaosKommandoAudioRig {
       case "abschieds-bumm":
         this.playNoiseBurst(0.32, 0.16, 1_100, 180);
         this.playTone("square", 180, 64, 0.22, 0.07);
+        break;
+      case "dynamit":
+        this.playNoiseBurst(0.55, 0.28, 800, 90);
+        this.playTone("sawtooth", 90, 28, 0.44, 0.12);
+        break;
+      case "heilige-granate":
+        this.playNoiseBurst(0.62, 0.3, 760, 70);
+        this.playTone("sawtooth", 80, 24, 0.5, 0.13);
+        this.playTone("sine", 523, 1_046, 0.4, 0.05);
+        break;
+      case "banane":
+        this.playNoiseBurst(0.34, 0.18, 1_300, 200);
+        this.playTone("triangle", 220, 70, 0.24, 0.08);
+        break;
+      case "luftschlag":
+        this.playNoiseBurst(0.4, 0.22, 1_000, 140);
+        this.playTone("sawtooth", 120, 40, 0.3, 0.1);
+        break;
+      case "baseball-schlaeger":
+        this.playNoiseBurst(0.09, 0.09, 3_000, 900);
+        this.playTone("square", 260, 110, 0.12, 0.08);
+        break;
+      case "minigun":
+        this.playNoiseBurst(0.09, 0.06, 3_600, 900);
+        this.playTone("square", 420, 180, 0.08, 0.045);
+        break;
+      case "mine":
+        this.playNoiseBurst(0.4, 0.22, 1_150, 150);
+        this.playTone("square", 200, 58, 0.26, 0.09);
         break;
     }
   }

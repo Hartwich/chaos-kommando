@@ -97,7 +97,7 @@ export function resolveSelection(state: ChaosKommandoState): ChaosKommandoSelect
 }
 
 export function resolveDisplayMercenaryRadius(mercenary: ChaosKommandoMercenaryState): number {
-  return Math.max(mercenary.radius, 25);
+  return Math.max(mercenary.radius, 14);
 }
 
 export function resolveChargeRatio(state: ChaosKommandoState): number {

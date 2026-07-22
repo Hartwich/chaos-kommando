@@ -10,7 +10,13 @@ export type ChaosKommandoWeaponId =
   | "bohrer-rakete"
   | "gummi-huhn"
   | "seifenblasen-bombe"
-  | "keks-moerser";
+  | "keks-moerser"
+  | "dynamit"
+  | "heilige-granate"
+  | "banane"
+  | "luftschlag"
+  | "baseball-schlaeger"
+  | "minigun";
 
 export type ChaosKommandoMercenaryRole =
   | "sprinter"
@@ -18,7 +24,7 @@ export type ChaosKommandoMercenaryRole =
   | "chaos-schuetze";
 
 export type ChaosKommandoWeaponFireMode = "charged" | "instant";
-export type ChaosKommandoExplosionSourceId = ChaosKommandoWeaponId | "abschieds-bumm";
+export type ChaosKommandoExplosionSourceId = ChaosKommandoWeaponId | "abschieds-bumm" | "mine";
 
 export interface ChaosKommandoMoveInput extends PlayerInput {
   type: "move";
@@ -74,7 +80,10 @@ export interface ChaosKommandoWeaponDefinition {
   blastRadius: number;
   projectileSpeed: number;
   gravityScale: number;
+  /** How strongly wind pushes this projectile (Worms: rockets 1, grenades 0). */
+  windScale: number;
   fuseMs: number | null;
+  /** <= 0 means the weapon does not carve a crater (e.g. baseball bat). */
   craterDepth: number;
 }
 
@@ -159,9 +168,18 @@ export interface ChaosKommandoTurnState {
   chargeStartedAt: number | null;
   chargeRatio: number;
   settleEndsAt: number | null;
+  /** While set, the active team may retreat (move/jump) but not fire again. */
+  retreatEndsAt: number | null;
   crosshairX: number;
   crosshairY: number;
   crosshairDistance: number;
+}
+
+/** A circular hole punched out of the terrain (true 2D destruction incl. tunnels). */
+export interface ChaosKommandoCraterState {
+  x: number;
+  y: number;
+  r: number;
 }
 
 export interface ChaosKommandoTerrainState {
@@ -172,6 +190,31 @@ export interface ChaosKommandoTerrainState {
   waterlineY: number;
   sampleSpacing: number;
   samples: number[];
+  craters: ChaosKommandoCraterState[];
+}
+
+export interface ChaosKommandoMineState {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  grounded: boolean;
+  /** Timestamp when the mine will explode after being triggered; null = dormant. */
+  explodesAt: number | null;
+}
+
+export interface ChaosKommandoCrateState {
+  id: string;
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  grounded: boolean;
+  weaponId: ChaosKommandoWeaponId;
+  amount: number;
 }
 
 export interface ChaosKommandoWindState {
@@ -188,7 +231,11 @@ export interface ChaosKommandoState {
   projectiles: ChaosKommandoProjectileState[];
   explosions: ChaosKommandoExplosionState[];
   gravestones: ChaosKommandoGravestoneState[];
+  mines: ChaosKommandoMineState[];
+  crates: ChaosKommandoCrateState[];
   wind: ChaosKommandoWindState;
+  /** True once the rising-water sudden death has started. */
+  suddenDeath: boolean;
   winnerPlayerId?: string;
   winnerName?: string;
   isDraw: boolean;

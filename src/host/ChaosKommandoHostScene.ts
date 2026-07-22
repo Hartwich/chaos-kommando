@@ -1,21 +1,15 @@
 import Phaser from "phaser";
 import type { ChaosKommandoState } from "../protocol.js";
 import { ChaosKommandoAudioRig } from "./ChaosKommandoAudio.js";
+import { preloadChaosKommandoCharacterAssets } from "./character/ChaosKommandoCharacterAssets.js";
 import {
-  chaosKommandoTextureKeys,
   createChaosKommandoRenderState,
   destroyChaosKommandoRenderState,
-  ensureChaosKommandoAnimations,
   renderChaosKommandoFrame,
   renderChaosKommandoIdleFrame,
   snapChaosKommandoCamera,
   type ChaosKommandoRenderState
 } from "./ChaosKommandoRenderer.js";
-import {
-  chaosKommandoCarryWeaponAssetPaths,
-  chaosKommandoGearAssetPaths,
-  marshmallowSheetPaths
-} from "./ChaosKommandoVisualConfig.js";
 
 const hostTheme = {
   titleFont: '"Oxanium", "Arial", sans-serif',
@@ -45,55 +39,13 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
   }
 
   preload(): void {
-    this.load.spritesheet(
-      chaosKommandoTextureKeys.mercenaries.sprinter,
-      marshmallowSheetPaths.cleanB,
-      {
-        frameWidth: 418,
-        frameHeight: 418
-      }
-    );
-    this.load.spritesheet(
-      chaosKommandoTextureKeys.mercenaries.grenadier,
-      marshmallowSheetPaths.cleanA,
-      {
-        frameWidth: 418,
-        frameHeight: 418
-      }
-    );
-    this.load.spritesheet(
-      chaosKommandoTextureKeys.mercenaries["chaos-schuetze"],
-      marshmallowSheetPaths.cleanA,
-      {
-        frameWidth: 418,
-        frameHeight: 418
-      }
-    );
-    this.load.svg(
-      chaosKommandoTextureKeys.pack,
-      chaosKommandoGearAssetPaths.backpack
-    );
-    this.load.svg(
-      chaosKommandoTextureKeys.helmet,
-      chaosKommandoGearAssetPaths.helmet
-    );
-    for (const [weaponId, textureKey] of Object.entries(chaosKommandoTextureKeys.weapons)) {
-      this.load.svg(
-        textureKey,
-        chaosKommandoCarryWeaponAssetPaths[weaponId as keyof typeof chaosKommandoCarryWeaponAssetPaths]
-      );
-    }
-    this.load.svg(
-      chaosKommandoTextureKeys.gravestone,
-      "/chaos-kommando/environment/gravestone.svg"
-    );
+    preloadChaosKommandoCharacterAssets(this);
   }
 
   create(): void {
     const client = this.registry.get("hostClient") as HostClientLike;
 
     this.cameras.main.setBackgroundColor("#04111f");
-    ensureChaosKommandoAnimations(this);
     this.renderState = createChaosKommandoRenderState(this);
     this.headerText = this.add
       .text(34, 24, "", {

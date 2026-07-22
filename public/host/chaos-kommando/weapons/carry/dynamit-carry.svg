@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <defs><linearGradient id="dynamite" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ff766d"/><stop offset=".55" stop-color="#dc2626"/><stop offset="1" stop-color="#7f1d1d"/></linearGradient></defs>
+  <g stroke="#241b1b" stroke-width="6" stroke-linecap="round" stroke-linejoin="round">
+    <rect x="36" y="72" width="144" height="34" rx="17" fill="url(#dynamite)"/>
+    <rect x="28" y="111" width="152" height="34" rx="17" fill="url(#dynamite)"/>
+    <rect x="40" y="150" width="140" height="34" rx="17" fill="url(#dynamite)"/>
+    <path d="M68 68v120M145 68v120" stroke="#713f12" stroke-width="11"/>
+    <path d="M180 89c35-4 35-34 49-39" fill="none" stroke="#d6d3d1"/>
+    <circle cx="231" cy="47" r="12" fill="#fbbf24" stroke="#f97316"/>
+    <circle cx="231" cy="47" r="4" fill="#fff7d6" stroke="none"/>
+  </g>
+</svg>

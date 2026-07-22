@@ -1,5 +1,6 @@
 import Phaser from "phaser";
 import type {
+  ChaosKommandoCraterState,
   ChaosKommandoMercenaryState,
   ChaosKommandoState,
   ChaosKommandoWeaponId
@@ -10,26 +11,17 @@ import {
   hashString,
   resolveChargeRatio,
   resolveCrosshairPoint,
-  resolveDisplayMercenaryRadius,
   resolveHealthRatio,
   resolveSelection,
   toColorNumber
 } from "./ChaosKommandoViewModel.js";
 import {
-  chaosKommandoBaseFrameSize,
-  chaosKommandoRigPreset,
-  mercenaryAnimationKeys,
-  mercenaryIdleFrame,
-  mercenaryJumpFallFrame,
-  mercenaryJumpRiseFrame,
-  mercenaryWalkFrames,
-  resolveChaosKommandoFrameRig,
-  resolveChaosKommandoRigFamilyForRole
-} from "./ChaosKommandoVisualConfig.js";
-import {
-  resolveAttachmentTransform,
-  resolveBodySpritePosition
-} from "./ChaosKommandoRigMath.js";
+  createChaosKommandoCharacterRenderState,
+  destroyChaosKommandoCharacterRenderState,
+  hideChaosKommandoCharacters,
+  syncChaosKommandoCharacters,
+  type ChaosKommandoCharacterRenderState
+} from "./character/ChaosKommandoCharacterRenderer.js";
 
 const idleWorld = {
   width: 1_680,
@@ -40,64 +32,33 @@ const idleWorld = {
     const x = index * 8;
     const ridge = Math.sin(x / 140) * 54 + Math.cos(x / 56) * 18 + Math.sin(x / 310) * 32;
     return clamp(552 + ridge, 455, 720);
-  })
+  }),
+  craters: [] as ChaosKommandoCraterState[]
 };
 
-const mercenaryTextureKeys = {
-  sprinter: "chaos-kommando-marshmallow-sprinter",
-  grenadier: "chaos-kommando-marshmallow-grenadier",
-  "chaos-schuetze": "chaos-kommando-marshmallow-gunner"
-} as const;
+const terrainTextureKey = "chaos-kommando-terrain";
+const idleTerrainTextureKey = "chaos-kommando-terrain-idle";
 
-const weaponTextureKeys: Record<ChaosKommandoWeaponId, string> = {
-  "kicher-bazooka": "chaos-kommando-weapon-kicher-bazooka",
-  "enten-granate": "chaos-kommando-weapon-enten-granate",
-  "plunder-pistole": "chaos-kommando-weapon-plunder-pistole",
-  "regenbogen-rakete": "chaos-kommando-weapon-regenbogen-rakete",
-  "splitter-granate": "chaos-kommando-weapon-splitter-granate",
-  "konfetti-schrot": "chaos-kommando-weapon-konfetti-schrot",
-  "bohrer-rakete": "chaos-kommando-weapon-bohrer-rakete",
-  "gummi-huhn": "chaos-kommando-weapon-gummi-huhn",
-  "seifenblasen-bombe": "chaos-kommando-weapon-seifenblasen-bombe",
-  "keks-moerser": "chaos-kommando-weapon-keks-moerser"
-} as const;
-
-const gearTextureKeys = {
-  helmet: "chaos-kommando-marshmallow-helmet",
-  backpack: "chaos-kommando-marshmallow-pack"
-} as const;
-
-const bodyOriginX = 0.5;
-const bodyOriginY = 0.72;
-
-export const chaosKommandoTextureKeys = {
-  mercenaries: mercenaryTextureKeys,
-  weapons: weaponTextureKeys,
-  weaponCarry: weaponTextureKeys,
-  helmet: gearTextureKeys.helmet,
-  pack: gearTextureKeys.backpack,
-  gear: gearTextureKeys,
-  gravestone: "chaos-kommando-gravestone"
-} as const;
-
-interface MercenarySpritePair {
-  backpack: Phaser.GameObjects.Image;
-  mercenary: Phaser.GameObjects.Sprite;
-  weapon: Phaser.GameObjects.Image;
-  helmet: Phaser.GameObjects.Image;
-  gravestone: Phaser.GameObjects.Image;
+interface TerrainLike {
+  mapId?: string;
+  width: number;
+  height: number;
+  sampleSpacing: number;
+  samples: number[];
+  craters: ChaosKommandoCraterState[];
 }
 
 export interface ChaosKommandoRenderState {
   skyGraphics: Phaser.GameObjects.Graphics;
-  terrainGraphics: Phaser.GameObjects.Graphics;
+  terrainImage: Phaser.GameObjects.Image | null;
+  terrainSignature: string;
   waterGraphics: Phaser.GameObjects.Graphics;
+  waterFrontGraphics: Phaser.GameObjects.Graphics;
   actorGraphics: Phaser.GameObjects.Graphics;
   effectsGraphics: Phaser.GameObjects.Graphics;
-  spriteLayer: Phaser.GameObjects.Layer;
-  mercenarySprites: Map<string, MercenarySpritePair>;
+  characterRenderState: ChaosKommandoCharacterRenderState;
+  nameLabels: Map<string, Phaser.GameObjects.Text>;
   explosionSeenAtMs: Map<string, number>;
-  activeMercenaryLabel: Phaser.GameObjects.Text;
   cameraCenterX: number;
   cameraCenterY: number;
   cameraZoom: number;
@@ -115,71 +76,37 @@ interface TerrainTheme {
   skyGlow: number;
   hillNear: number;
   hillFar: number;
-  terrainBody: number;
-  terrainMid: number;
-  terrainDeep: number;
-  grass: number;
-  grassHighlight: number;
-}
-
-export function ensureChaosKommandoAnimations(scene: Phaser.Scene): void {
-  const animationEntries = Object.entries(mercenaryAnimationKeys) as Array<
-    [keyof typeof mercenaryAnimationKeys, string]
-  >;
-
-  for (const [role, animationKey] of animationEntries) {
-    if (scene.anims.exists(animationKey)) {
-      continue;
-    }
-
-    scene.anims.create({
-      key: animationKey,
-      frames: scene.anims.generateFrameNumbers(mercenaryTextureKeys[role], {
-        frames: [...mercenaryWalkFrames]
-      }),
-      frameRate: 11,
-      repeat: -1
-    });
-  }
+  terrainBody: string;
+  terrainMid: string;
+  terrainDeep: string;
+  grass: string;
+  grassHighlight: string;
+  craterRim: string;
 }
 
 export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKommandoRenderState {
   const skyGraphics = scene.add.graphics();
   skyGraphics.setDepth(-60);
-  const terrainGraphics = scene.add.graphics();
-  terrainGraphics.setDepth(-10);
   const waterGraphics = scene.add.graphics();
   waterGraphics.setDepth(-4);
-  const actorGraphics = scene.add.graphics();
-  actorGraphics.setDepth(22);
   const effectsGraphics = scene.add.graphics();
   effectsGraphics.setDepth(11);
-  const spriteLayer = scene.add.layer();
-  spriteLayer.setDepth(8);
-  const activeMercenaryLabel = scene.add
-    .text(0, 0, "", {
-      fontFamily: "var(--font-display, sans-serif)",
-      fontSize: "16px",
-      color: "#f8fafc",
-      backgroundColor: "rgba(2, 6, 23, 0.82)",
-      stroke: "#020617",
-      strokeThickness: 3
-    })
-    .setDepth(26)
-    .setOrigin(0.5, 1)
-    .setPadding(10, 6, 10, 6)
-    .setVisible(false);
+  const actorGraphics = scene.add.graphics();
+  actorGraphics.setDepth(24);
+  const waterFrontGraphics = scene.add.graphics();
+  waterFrontGraphics.setDepth(28);
 
   return {
     skyGraphics,
-    terrainGraphics,
+    terrainImage: null,
+    terrainSignature: "",
     waterGraphics,
+    waterFrontGraphics,
     actorGraphics,
     effectsGraphics,
-    spriteLayer,
-    mercenarySprites: new Map(),
+    characterRenderState: createChaosKommandoCharacterRenderState(),
+    nameLabels: new Map(),
     explosionSeenAtMs: new Map(),
-    activeMercenaryLabel,
     cameraCenterX: idleWorld.width / 2,
     cameraCenterY: idleWorld.height / 2,
     cameraZoom: 0.92
@@ -188,21 +115,18 @@ export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKomman
 
 export function destroyChaosKommandoRenderState(renderState: ChaosKommandoRenderState): void {
   renderState.skyGraphics.destroy();
-  renderState.terrainGraphics.destroy();
+  renderState.terrainImage?.destroy();
+  renderState.terrainImage = null;
   renderState.waterGraphics.destroy();
+  renderState.waterFrontGraphics.destroy();
   renderState.actorGraphics.destroy();
   renderState.effectsGraphics.destroy();
-  for (const spritePair of renderState.mercenarySprites.values()) {
-    spritePair.backpack.destroy();
-    spritePair.mercenary.destroy();
-    spritePair.weapon.destroy();
-    spritePair.helmet.destroy();
-    spritePair.gravestone.destroy();
+  destroyChaosKommandoCharacterRenderState(renderState.characterRenderState);
+  for (const label of renderState.nameLabels.values()) {
+    label.destroy();
   }
-  renderState.mercenarySprites.clear();
+  renderState.nameLabels.clear();
   renderState.explosionSeenAtMs.clear();
-  renderState.spriteLayer.destroy();
-  renderState.activeMercenaryLabel.destroy();
 }
 
 export function snapChaosKommandoCamera(
@@ -231,27 +155,24 @@ export function renderChaosKommandoIdleFrame(
   );
   applyCamera(scene, renderState, idleWorld.width, idleWorld.height);
   drawSky(renderState.skyGraphics, idleWorld.width, idleWorld.height, idleWorld.waterlineY, timeMs, 1, 1, "klapperkueste");
-  drawTerrain(
-    renderState.terrainGraphics,
-    idleWorld.width,
-    idleWorld.height,
-    idleWorld.samples,
-    idleWorld.sampleSpacing,
-    "klapperkueste"
-  );
+  syncTerrainTexture(scene, renderState, idleWorld, idleTerrainTextureKey, "klapperkueste");
   drawWater(
     renderState.waterGraphics,
+    renderState.waterFrontGraphics,
     idleWorld.width,
     idleWorld.height,
     idleWorld.waterlineY,
     timeMs,
     0.55,
-    1
+    1,
+    false
   );
   renderState.effectsGraphics.clear();
   renderState.actorGraphics.clear();
-  syncIdleSprites(renderState);
-  renderState.activeMercenaryLabel.setVisible(false);
+  hideChaosKommandoCharacters(renderState.characterRenderState);
+  for (const label of renderState.nameLabels.values()) {
+    label.setVisible(false);
+  }
 }
 
 export function renderChaosKommandoFrame(
@@ -261,9 +182,10 @@ export function renderChaosKommandoFrame(
   nowMs: number
 ): void {
   const target = resolveCameraTarget(scene, state);
-  renderState.cameraCenterX = Phaser.Math.Linear(renderState.cameraCenterX, target.centerX, 0.14);
-  renderState.cameraCenterY = Phaser.Math.Linear(renderState.cameraCenterY, target.centerY, 0.12);
-  renderState.cameraZoom = Phaser.Math.Linear(renderState.cameraZoom, target.zoom, 0.12);
+  const trackingSpeed = state.projectiles.length > 0 ? 0.18 : 0.11;
+  renderState.cameraCenterX = Phaser.Math.Linear(renderState.cameraCenterX, target.centerX, trackingSpeed);
+  renderState.cameraCenterY = Phaser.Math.Linear(renderState.cameraCenterY, target.centerY, trackingSpeed * 0.9);
+  renderState.cameraZoom = Phaser.Math.Linear(renderState.cameraZoom, target.zoom, 0.1);
   applyCamera(scene, renderState, state.terrain.width, state.terrain.height);
 
   drawSky(
@@ -276,27 +198,22 @@ export function renderChaosKommandoFrame(
     state.wind.direction,
     state.terrain.mapId
   );
-  drawTerrain(
-    renderState.terrainGraphics,
-    state.terrain.width,
-    state.terrain.height,
-    state.terrain.samples,
-    state.terrain.sampleSpacing,
-    state.terrain.mapId
-  );
+  syncTerrainTexture(scene, renderState, state.terrain, terrainTextureKey, state.terrain.mapId);
   drawWater(
     renderState.waterGraphics,
+    renderState.waterFrontGraphics,
     state.terrain.width,
     state.terrain.height,
     state.terrain.waterlineY,
     nowMs,
     state.wind.strength,
-    state.wind.direction
+    state.wind.direction,
+    state.suddenDeath
   );
-  syncMercenarySprites(renderState, state, nowMs);
   drawEffects(renderState.effectsGraphics, state, nowMs, renderState.explosionSeenAtMs);
+  syncChaosKommandoCharacters(scene, renderState.characterRenderState, state, nowMs);
   drawActors(renderState.actorGraphics, state, nowMs);
-  syncActiveMercenaryLabel(renderState.activeMercenaryLabel, state);
+  syncNameLabels(scene, renderState, state);
 }
 
 function applyCamera(
@@ -321,352 +238,102 @@ function applyCamera(
   camera.centerOn(centerX, centerY);
 }
 
+/**
+ * Artillery camera: close-up while aiming, wide while shots fly,
+ * whole map on game end.
+ */
 function resolveCameraTarget(scene: Phaser.Scene, state: ChaosKommandoState): CameraTarget {
+  const worldWidth = state.terrain.width;
+  const worldHeight = state.terrain.height;
+  const fitZoom = Math.min(scene.scale.width / worldWidth, scene.scale.height / worldHeight);
+
+  if (state.winnerPlayerId || state.isDraw) {
+    return {
+      centerX: worldWidth / 2,
+      centerY: worldHeight / 2 - 60,
+      zoom: fitZoom * 0.98
+    };
+  }
+
   const targetSelection = resolveSelection(state);
   const activeMercenary = targetSelection.mercenary;
-  const activeCrosshair =
-    !state.turn.hasFired || state.turn.chargeRatio > 0
-      ? resolveCrosshairPoint(state)
-      : null;
-  const focusCandidates = [
-    ...(activeMercenary ? [{ x: activeMercenary.x, y: activeMercenary.y - 10 }] : []),
-    ...state.projectiles.map((projectile) => ({ x: projectile.x, y: projectile.y })),
-    ...state.explosions.map((explosion) => ({ x: explosion.x, y: explosion.y })),
-    ...(activeCrosshair ? [activeCrosshair] : []),
-    { x: state.cameraFocusX, y: state.cameraFocusY }
-  ];
 
-  let minX = state.cameraFocusX;
-  let maxX = state.cameraFocusX;
-  let minY = state.cameraFocusY;
-  let maxY = state.cameraFocusY;
+  // Shot in flight: zoom out so the whole trajectory stays visible.
+  if (state.projectiles.length > 0) {
+    let minX = Number.POSITIVE_INFINITY;
+    let maxX = Number.NEGATIVE_INFINITY;
+    let minY = Number.POSITIVE_INFINITY;
+    let maxY = Number.NEGATIVE_INFINITY;
+    const focusPoints = [
+      ...state.projectiles.map((projectile) => ({ x: projectile.x, y: projectile.y })),
+      ...state.explosions.map((explosion) => ({ x: explosion.x, y: explosion.y })),
+      ...(activeMercenary ? [{ x: activeMercenary.x, y: activeMercenary.y }] : [])
+    ];
 
-  for (const point of focusCandidates) {
-    minX = Math.min(minX, point.x);
-    maxX = Math.max(maxX, point.x);
-    minY = Math.min(minY, point.y);
-    maxY = Math.max(maxY, point.y);
+    for (const point of focusPoints) {
+      minX = Math.min(minX, point.x);
+      maxX = Math.max(maxX, point.x);
+      minY = Math.min(minY, point.y);
+      maxY = Math.max(maxY, point.y);
+    }
+
+    const viewWidth = clamp(maxX - minX + 520, 760, worldWidth);
+    const viewHeight = clamp(maxY - minY + 420, 540, worldHeight);
+    const zoom = clamp(
+      Math.min(scene.scale.width / viewWidth, scene.scale.height / viewHeight),
+      fitZoom * 0.9,
+      1.05
+    );
+    // Lead the newest projectile a bit along its velocity.
+    const lead = state.projectiles[state.projectiles.length - 1];
+
+    return {
+      centerX: (minX + maxX) / 2 + (lead ? clamp(lead.vx * 0.14, -120, 120) : 0),
+      centerY: (minY + maxY) / 2 + (lead ? clamp(lead.vy * 0.1, -90, 90) : 0),
+      zoom
+    };
   }
 
-  const actionWidth = clamp(maxX - minX + 420, 560, Math.min(1_380, state.terrain.width));
-  const actionHeight = clamp(maxY - minY + 330, 430, Math.min(960, state.terrain.height));
-  const minZoom = Math.min(scene.scale.width / state.terrain.width, scene.scale.height / state.terrain.height) * 0.82;
-  const desiredZoom = Math.min(scene.scale.width / actionWidth, scene.scale.height / actionHeight, 1.14);
-  const zoom = clamp(desiredZoom, Math.max(0.68, minZoom), 1.14);
-  const aimBiasedX =
-    activeMercenary && activeCrosshair
-      ? Phaser.Math.Linear(activeMercenary.x, activeCrosshair.x, state.projectiles.length > 0 ? 0.12 : 0.22)
-      : activeMercenary?.x ?? state.cameraFocusX;
-  const aimBiasedY =
-    activeMercenary && activeCrosshair
-      ? Phaser.Math.Linear(activeMercenary.y - 42, activeCrosshair.y, state.projectiles.length > 0 ? 0.08 : 0.16)
-      : (activeMercenary?.y ?? state.cameraFocusY) - 32;
-  const centerX = activeMercenary
-    ? Phaser.Math.Linear(state.cameraFocusX, aimBiasedX, state.projectiles.length > 0 ? 0.24 : 0.42)
-    : state.cameraFocusX;
-  const centerY = activeMercenary
-    ? Phaser.Math.Linear(state.cameraFocusY - 24, aimBiasedY, state.projectiles.length > 0 ? 0.18 : 0.32)
-    : state.cameraFocusY - 32;
+  // Fresh explosion: hold on the impact.
+  const recentExplosion = state.explosions[0];
+
+  if (recentExplosion) {
+    return {
+      centerX: recentExplosion.x,
+      centerY: recentExplosion.y - 30,
+      zoom: clamp(Math.min(scene.scale.width / 1_050, scene.scale.height / 680), fitZoom, 1.15)
+    };
+  }
+
+  // Aiming: close-up on the active worm, biased toward the crosshair.
+  const activeCrosshair = !state.turn.hasFired ? resolveCrosshairPoint(state) : null;
+  const chargeRatio = resolveChargeRatio(state);
+  const closeZoom = clamp(
+    Math.min(scene.scale.width / 940, scene.scale.height / 600) * (1 - chargeRatio * 0.16),
+    fitZoom,
+    1.32
+  );
+
+  if (!activeMercenary) {
+    return {
+      centerX: state.cameraFocusX,
+      centerY: state.cameraFocusY - 30,
+      zoom: clamp(fitZoom * 1.35, fitZoom, 1)
+    };
+  }
+
+  const biasX = activeCrosshair
+    ? Phaser.Math.Linear(activeMercenary.x, activeCrosshair.x, 0.28)
+    : activeMercenary.x;
+  const biasY = activeCrosshair
+    ? Phaser.Math.Linear(activeMercenary.y - 40, activeCrosshair.y, 0.2)
+    : activeMercenary.y - 40;
 
   return {
-    centerX,
-    centerY,
-    zoom
+    centerX: biasX,
+    centerY: biasY,
+    zoom: closeZoom
   };
-}
-
-function syncIdleSprites(renderState: ChaosKommandoRenderState): void {
-  for (const spritePair of renderState.mercenarySprites.values()) {
-    spritePair.backpack.setVisible(false);
-    spritePair.mercenary.setVisible(false);
-    spritePair.weapon.setVisible(false);
-    spritePair.helmet.setVisible(false);
-    spritePair.gravestone.setVisible(false);
-  }
-}
-
-function syncMercenarySprites(
-  renderState: ChaosKommandoRenderState,
-  state: ChaosKommandoState,
-  _nowMs: number
-): void {
-  const knownIds = new Set<string>();
-  const gravestoneByMercenaryId = new Map(state.gravestones.map((gravestone) => [gravestone.mercenaryId, gravestone]));
-
-  for (const player of state.players) {
-    for (const mercenary of player.mercenaries) {
-      knownIds.add(mercenary.id);
-
-      let spritePair = renderState.mercenarySprites.get(mercenary.id);
-
-      if (!spritePair) {
-        const backpackSprite = renderState.spriteLayer.scene.add
-          .image(mercenary.x, mercenary.y, chaosKommandoTextureKeys.pack)
-          .setDepth(8);
-        const mercenarySprite = renderState.spriteLayer.scene.add
-          .sprite(mercenary.x, mercenary.y, mercenaryTextureKeys[mercenary.role], 4)
-          .setOrigin(0.5, 0.72)
-          .setDepth(9);
-        const weaponSprite = renderState.spriteLayer.scene.add
-          .image(mercenary.x, mercenary.y, chaosKommandoTextureKeys.weapons["plunder-pistole"])
-          .setDepth(9.4);
-        const helmetSprite = renderState.spriteLayer.scene.add
-          .image(mercenary.x, mercenary.y, chaosKommandoTextureKeys.helmet)
-          .setDepth(9.8);
-        const gravestoneSprite = renderState.spriteLayer.scene.add
-          .image(mercenary.x, mercenary.y, chaosKommandoTextureKeys.gravestone)
-          .setDepth(10)
-          .setVisible(false);
-        renderState.spriteLayer.add([backpackSprite, mercenarySprite, weaponSprite, helmetSprite, gravestoneSprite]);
-        spritePair = {
-          backpack: backpackSprite,
-          mercenary: mercenarySprite,
-          weapon: weaponSprite,
-          helmet: helmetSprite,
-          gravestone: gravestoneSprite
-        };
-        renderState.mercenarySprites.set(mercenary.id, spritePair);
-      }
-
-      const gravestone = gravestoneByMercenaryId.get(mercenary.id);
-      const displayRadius = resolveDisplayMercenaryRadius(mercenary);
-      const displaySize = displayRadius * 3.42;
-      const scale = displaySize / chaosKommandoBaseFrameSize;
-      const alpha = mercenary.alive ? 1 : 0.58;
-      const showMercenary = mercenary.alive || !gravestone;
-      const heldWeaponId = resolveHeldWeaponId(state, mercenary);
-
-      syncMercenaryAnimation(spritePair.mercenary, mercenary);
-      const frameIndex = resolveMercenaryFrameIndex(spritePair.mercenary);
-      const frameRig = resolveChaosKommandoFrameRig(
-        chaosKommandoRigPreset,
-        resolveChaosKommandoRigFamilyForRole(mercenary.role),
-        frameIndex
-      );
-      const bodyPosition = resolveBodySpritePosition({
-        bodyX: mercenary.x,
-        bodyY: mercenary.y + displayRadius * (mercenary.alive ? 0.1 : 0.3),
-        bodyScale: scale,
-        direction: mercenary.facing,
-        frameRig
-      });
-
-      spritePair.mercenary
-        .setVisible(showMercenary)
-        .setPosition(bodyPosition.x, bodyPosition.y)
-        .setScale(scale)
-        .setOrigin(bodyOriginX, bodyOriginY)
-        .setFlipX(mercenary.facing === "left")
-        .setAngle(0)
-        .setAlpha(alpha)
-        .clearTint();
-
-      syncGearSprite(
-        spritePair.backpack,
-        chaosKommandoRigPreset.gears.backpack,
-        showMercenary,
-        alpha,
-        bodyPosition.x,
-        bodyPosition.y,
-        scale,
-        mercenary,
-        frameRig
-      );
-
-      syncHeldWeaponSprite(
-        spritePair.weapon,
-        mercenary,
-        heldWeaponId,
-        showMercenary,
-        alpha,
-        bodyPosition.x,
-        bodyPosition.y,
-        scale,
-        frameRig,
-        state
-      );
-
-      syncGearSprite(
-        spritePair.helmet,
-        chaosKommandoRigPreset.gears.helmet,
-        showMercenary,
-        alpha,
-        bodyPosition.x,
-        bodyPosition.y,
-        scale,
-        mercenary,
-        frameRig
-      );
-
-      spritePair.gravestone
-        .setVisible(Boolean(gravestone))
-        .setPosition(
-          gravestone?.x ?? mercenary.x,
-          gravestone?.y ?? mercenary.y + mercenary.radius * 1.34
-        )
-        .setDisplaySize((gravestone?.radius ?? displayRadius) * 2.5, (gravestone?.radius ?? displayRadius) * 2.5)
-        .setAngle(gravestone && !gravestone.grounded ? clamp(gravestone.vx * 0.08, -16, 16) : 0)
-        .setAlpha(0.96);
-    }
-  }
-
-  for (const [mercenaryId, spritePair] of renderState.mercenarySprites.entries()) {
-    if (knownIds.has(mercenaryId)) {
-      continue;
-    }
-
-    spritePair.backpack.destroy();
-    spritePair.mercenary.destroy();
-    spritePair.weapon.destroy();
-    spritePair.helmet.destroy();
-    spritePair.gravestone.destroy();
-    renderState.mercenarySprites.delete(mercenaryId);
-  }
-}
-
-function resolveHeldWeaponId(
-  state: ChaosKommandoState,
-  mercenary: ChaosKommandoMercenaryState
-): ChaosKommandoWeaponId {
-  if (mercenary.id === state.turn.activeMercenaryId && mercenary.playerId === state.turn.currentPlayerId) {
-    return state.turn.currentWeaponId;
-  }
-
-  switch (mercenary.role) {
-    case "grenadier":
-      return "enten-granate";
-    case "chaos-schuetze":
-      return "kicher-bazooka";
-    case "sprinter":
-    default:
-      return "plunder-pistole";
-  }
-}
-
-function syncMercenaryAnimation(
-  sprite: Phaser.GameObjects.Sprite,
-  mercenary: ChaosKommandoMercenaryState
-): void {
-  if (!mercenary.alive) {
-    if (sprite.anims.isPlaying) {
-      sprite.stop();
-    }
-    sprite.setFrame(mercenaryIdleFrame);
-    return;
-  }
-
-  const animationKey = mercenaryAnimationKeys[mercenary.role];
-  const isWalking = mercenary.grounded && Math.abs(mercenary.vx) > 18;
-
-  if (isWalking) {
-    if (sprite.anims.currentAnim?.key !== animationKey || !sprite.anims.isPlaying) {
-      sprite.play(animationKey, true);
-    }
-    sprite.anims.timeScale = clamp(Math.abs(mercenary.vx) / 96, 0.85, 1.45);
-    return;
-  }
-
-  if (sprite.anims.isPlaying) {
-    sprite.stop();
-  }
-
-  sprite.setFrame(
-    mercenary.grounded
-      ? mercenaryIdleFrame
-      : mercenary.vy < 0
-        ? mercenaryJumpRiseFrame
-        : mercenaryJumpFallFrame
-  );
-}
-
-function syncHeldWeaponSprite(
-  sprite: Phaser.GameObjects.Image,
-  mercenary: ChaosKommandoMercenaryState,
-  weaponId: ChaosKommandoWeaponId,
-  visible: boolean,
-  alpha: number,
-  bodyX: number,
-  bodyY: number,
-  bodyScale: number,
-  frameRig: ReturnType<typeof resolveChaosKommandoFrameRig>,
-  state: ChaosKommandoState
-): void {
-  const profile = chaosKommandoRigPreset.weapons[weaponId];
-  const isAimDrivenWeapon =
-    mercenary.id === state.turn.activeMercenaryId &&
-    mercenary.playerId === state.turn.currentPlayerId &&
-    mercenary.alive;
-
-  sprite.setTexture(chaosKommandoTextureKeys.weapons[weaponId]);
-
-  const transform = resolveAttachmentTransform({
-    bodyX,
-    bodyY,
-    bodyScale,
-    direction: mercenary.facing,
-    frameRig,
-    profile,
-    textureWidth: sprite.frame?.realWidth ?? 1,
-    textureHeight: sprite.frame?.realHeight ?? 1,
-    baseRotationRad: isAimDrivenWeapon ? mercenary.aimAngleRad : undefined,
-    mirrorWithDirection: isAimDrivenWeapon || profile.mode === "single",
-    alphaMultiplier: alpha
-  });
-
-  applyAttachmentTransform(sprite, {
-    ...transform,
-    visible: visible && transform.visible
-  });
-}
-
-function syncGearSprite(
-  sprite: Phaser.GameObjects.Image,
-  profile: (typeof chaosKommandoRigPreset.gears)[keyof typeof chaosKommandoRigPreset.gears],
-  visible: boolean,
-  alpha: number,
-  bodyX: number,
-  bodyY: number,
-  bodyScale: number,
-  mercenary: ChaosKommandoMercenaryState,
-  frameRig: ReturnType<typeof resolveChaosKommandoFrameRig>
-): void {
-  const transform = resolveAttachmentTransform({
-    bodyX,
-    bodyY,
-    bodyScale,
-    direction: mercenary.facing,
-    frameRig,
-    profile,
-    textureWidth: sprite.frame?.realWidth ?? 1,
-    textureHeight: sprite.frame?.realHeight ?? 1,
-    mirrorWithDirection: true,
-    alphaMultiplier: alpha
-  });
-
-  applyAttachmentTransform(sprite, {
-    ...transform,
-    visible: visible && transform.visible
-  });
-}
-
-function applyAttachmentTransform(
-  sprite: Phaser.GameObjects.Image,
-  transform: ReturnType<typeof resolveAttachmentTransform>
-): void {
-  sprite
-    .setVisible(transform.visible)
-    .setOrigin(transform.originX, transform.originY)
-    .setPosition(transform.x, transform.y)
-    .setRotation(transform.rotationRad)
-    .setScale(transform.scaleX, transform.scaleY)
-    .setAlpha(transform.alpha);
-}
-
-function resolveMercenaryFrameIndex(sprite: Phaser.GameObjects.Sprite): number {
-  const rawFrame = sprite.frame?.name ?? mercenaryIdleFrame;
-  const parsedFrame =
-    typeof rawFrame === "number" ? rawFrame : Number.parseInt(String(rawFrame), 10);
-  return Number.isFinite(parsedFrame) ? parsedFrame : mercenaryIdleFrame;
 }
 
 function resolveTerrainTheme(mapId?: string): TerrainTheme {
@@ -678,11 +345,12 @@ function resolveTerrainTheme(mapId?: string): TerrainTheme {
         skyGlow: 0xfff0d1,
         hillNear: 0x7890a3,
         hillFar: 0xa1b6c5,
-        terrainBody: 0x8c5d33,
-        terrainMid: 0x6e4725,
-        terrainDeep: 0x4d301a,
-        grass: 0x8bcf52,
-        grassHighlight: 0xeaf9b8
+        terrainBody: "#8c5d33",
+        terrainMid: "#6e4725",
+        terrainDeep: "#3f2814",
+        grass: "#8bcf52",
+        grassHighlight: "#eaf9b8",
+        craterRim: "#33200f"
       };
     case "seeschlund":
       return {
@@ -691,11 +359,26 @@ function resolveTerrainTheme(mapId?: string): TerrainTheme {
         skyGlow: 0xffefcb,
         hillNear: 0x607a89,
         hillFar: 0x91adbf,
-        terrainBody: 0x7b4f32,
-        terrainMid: 0x5f3e24,
-        terrainDeep: 0x3e2616,
-        grass: 0x7fc550,
-        grassHighlight: 0xe8f7af
+        terrainBody: "#7b4f32",
+        terrainMid: "#5f3e24",
+        terrainDeep: "#331f10",
+        grass: "#7fc550",
+        grassHighlight: "#e8f7af",
+        craterRim: "#2c1b0c"
+      };
+    case "wurmfelsen":
+      return {
+        skyTop: 0x9bb8e8,
+        skyMid: 0xf3b8a0,
+        skyGlow: 0xffe9d3,
+        hillNear: 0x6a7a94,
+        hillFar: 0x9aa9c0,
+        terrainBody: "#79553a",
+        terrainMid: "#5c3f28",
+        terrainDeep: "#33220f",
+        grass: "#93d15e",
+        grassHighlight: "#eefabf",
+        craterRim: "#2e1d0e"
       };
     default:
       return {
@@ -704,13 +387,174 @@ function resolveTerrainTheme(mapId?: string): TerrainTheme {
         skyGlow: 0xfff0d1,
         hillNear: 0x738a98,
         hillFar: 0xa0b6c5,
-        terrainBody: 0x845833,
-        terrainMid: 0x684425,
-        terrainDeep: 0x482f1a,
-        grass: 0x87c959,
-        grassHighlight: 0xeaf9b8
+        terrainBody: "#845833",
+        terrainMid: "#684425",
+        terrainDeep: "#3a2412",
+        grass: "#87c959",
+        grassHighlight: "#eaf9b8",
+        craterRim: "#31200f"
       };
   }
+}
+
+function buildTerrainSignature(terrain: TerrainLike, textureKey: string): string {
+  return `${textureKey}:${terrain.mapId ?? "idle"}:${terrain.width}:${terrain.samples.length}:${terrain.craters.length}`;
+}
+
+/**
+ * Paints the destructible terrain into a canvas texture. Craters are punched
+ * out with destination-out compositing, which is what makes real tunnels and
+ * overhangs visible, exactly like classic Worms bitmap terrain.
+ */
+function syncTerrainTexture(
+  scene: Phaser.Scene,
+  renderState: ChaosKommandoRenderState,
+  terrain: TerrainLike,
+  textureKey: string,
+  mapId?: string
+): void {
+  const signature = buildTerrainSignature(terrain, textureKey);
+
+  if (renderState.terrainSignature === signature && renderState.terrainImage) {
+    return;
+  }
+
+  const theme = resolveTerrainTheme(mapId);
+  let texture = scene.textures.exists(textureKey)
+    ? (scene.textures.get(textureKey) as Phaser.Textures.CanvasTexture)
+    : scene.textures.createCanvas(textureKey, terrain.width, terrain.height);
+
+  if (!texture) {
+    return;
+  }
+
+  if (texture.width !== terrain.width || texture.height !== terrain.height) {
+    scene.textures.remove(textureKey);
+    const recreated = scene.textures.createCanvas(textureKey, terrain.width, terrain.height);
+
+    if (!recreated) {
+      return;
+    }
+
+    texture = recreated;
+  }
+
+  paintTerrainCanvas(texture, terrain, theme);
+
+  if (!renderState.terrainImage || renderState.terrainImage.texture.key !== textureKey) {
+    renderState.terrainImage?.destroy();
+    renderState.terrainImage = scene.add.image(0, 0, textureKey).setOrigin(0, 0).setDepth(-10);
+  } else {
+    renderState.terrainImage.setTexture(textureKey);
+  }
+
+  renderState.terrainSignature = signature;
+}
+
+function traceTerrainOutline(
+  ctx: CanvasRenderingContext2D,
+  terrain: TerrainLike,
+  offsetY: number
+): void {
+  ctx.moveTo(0, (terrain.samples[0] ?? 0) + offsetY);
+
+  for (let index = 1; index < terrain.samples.length; index += 1) {
+    ctx.lineTo(index * terrain.sampleSpacing, (terrain.samples[index] ?? 0) + offsetY);
+  }
+}
+
+function paintTerrainCanvas(
+  texture: Phaser.Textures.CanvasTexture,
+  terrain: TerrainLike,
+  theme: TerrainTheme
+): void {
+  const ctx = texture.getContext();
+  const { width, height } = terrain;
+
+  ctx.save();
+  ctx.globalCompositeOperation = "source-over";
+  ctx.clearRect(0, 0, width, height);
+
+  // Solid terrain body with layered soil gradient.
+  ctx.beginPath();
+  ctx.moveTo(0, height);
+  ctx.lineTo(0, terrain.samples[0] ?? height);
+  traceTerrainOutline(ctx, terrain, 0);
+  ctx.lineTo(width, height);
+  ctx.closePath();
+
+  const gradient = ctx.createLinearGradient(0, 380, 0, height);
+  gradient.addColorStop(0, theme.terrainBody);
+  gradient.addColorStop(0.45, theme.terrainMid);
+  gradient.addColorStop(1, theme.terrainDeep);
+  ctx.fillStyle = gradient;
+  ctx.fill();
+
+  // Dirt speckles inside the terrain.
+  ctx.save();
+  ctx.clip();
+  for (let index = 0; index < terrain.samples.length; index += 9) {
+    const x = index * terrain.sampleSpacing;
+    const surfaceY = terrain.samples[index] ?? height;
+    const seed = (index * 2_654_435_761) >>> 0;
+
+    for (let layer = 0; layer < 3; layer += 1) {
+      const y = surfaceY + 28 + ((seed >>> (layer * 5)) % 200) + layer * 120;
+
+      if (y > height - 8) {
+        continue;
+      }
+
+      ctx.fillStyle = layer % 2 === 0 ? "rgba(0, 0, 0, 0.13)" : "rgba(255, 235, 200, 0.05)";
+      ctx.beginPath();
+      ctx.arc(x + ((seed >>> 3) % 26), y, 2.4 + ((seed >>> 7) % 4), 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+
+  // Grass cap along the surface.
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = theme.grass;
+  ctx.lineWidth = 9;
+  ctx.beginPath();
+  traceTerrainOutline(ctx, terrain, 0);
+  ctx.stroke();
+  ctx.strokeStyle = theme.grassHighlight;
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  traceTerrainOutline(ctx, terrain, -3);
+  ctx.stroke();
+
+  // Punch out every crater: this creates the tunnels and overhangs.
+  ctx.globalCompositeOperation = "destination-out";
+  for (const crater of terrain.craters) {
+    ctx.beginPath();
+    ctx.arc(crater.x, crater.y, crater.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // Scorched rims around the holes (only where terrain remains).
+  ctx.globalCompositeOperation = "source-atop";
+  for (const crater of terrain.craters) {
+    ctx.strokeStyle = theme.craterRim;
+    ctx.lineWidth = 7;
+    ctx.globalAlpha = 0.62;
+    ctx.beginPath();
+    ctx.arc(crater.x, crater.y, crater.r + 2, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = "rgba(255, 205, 130, 0.16)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(crater.x, crater.y, crater.r + 7, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  ctx.globalCompositeOperation = "source-over";
+  ctx.restore();
+  texture.refresh();
 }
 
 function drawSky(
@@ -740,7 +584,6 @@ function drawSky(
 
   drawHillBand(graphics, worldWidth, worldHeight, 424, 86, theme.hillFar, 0.76, 188, 0.00092);
   drawHillBand(graphics, worldWidth, worldHeight, 540, 128, theme.hillNear, 0.84, 108, 0.00114);
-  drawCoastDecor(graphics, worldWidth, waterlineY, mapId);
   drawClouds(graphics, worldWidth, timeMs, windStrength, windDirection);
 }
 
@@ -788,189 +631,67 @@ function drawClouds(
     const width = 70 + (seed % 55);
     const height = 22 + (seed % 13);
 
-    graphics.fillStyle(0xf8fafc, 0.05);
+    graphics.fillStyle(0xf8fafc, 0.08);
     graphics.fillEllipse(baseX, baseY, width, height);
     graphics.fillEllipse(baseX + width * 0.22, baseY - 9, width * 0.72, height * 0.78);
     graphics.fillEllipse(baseX - width * 0.18, baseY - 7, width * 0.65, height * 0.7);
   }
 }
 
-function drawCoastDecor(
-  graphics: Phaser.GameObjects.Graphics,
-  worldWidth: number,
-  waterlineY: number,
-  mapId?: string
-): void {
-  graphics.fillStyle(0x1f3346, 0.28);
-  graphics.fillEllipse(worldWidth * 0.18, waterlineY - 104, 240, 54);
-  graphics.fillEllipse(worldWidth * 0.78, waterlineY - 90, 320, 60);
-
-  if (mapId === "klapperkueste") {
-    graphics.fillStyle(0x486476, 0.62);
-    graphics.fillRect(worldWidth * 0.12, waterlineY - 198, 10, 88);
-    graphics.fillTriangle(
-      worldWidth * 0.125,
-      waterlineY - 234,
-      worldWidth * 0.17,
-      waterlineY - 188,
-      worldWidth * 0.125,
-      waterlineY - 166
-    );
-    graphics.fillStyle(0x2b4053, 0.54);
-    graphics.beginPath();
-    graphics.moveTo(worldWidth * 0.83, waterlineY - 150);
-    graphics.lineTo(worldWidth * 0.89, waterlineY - 136);
-    graphics.lineTo(worldWidth * 0.87, waterlineY - 116);
-    graphics.lineTo(worldWidth * 0.8, waterlineY - 124);
-    graphics.closePath();
-    graphics.fillPath();
-  }
-}
-
-function drawTerrain(
-  graphics: Phaser.GameObjects.Graphics,
-  worldWidth: number,
-  worldHeight: number,
-  samples: number[],
-  sampleSpacing: number,
-  mapId?: string
-): void {
-  const theme = resolveTerrainTheme(mapId);
-  graphics.clear();
-  graphics.fillStyle(theme.terrainBody, 1);
-  graphics.beginPath();
-  graphics.moveTo(0, worldHeight);
-  for (let index = 0; index < samples.length; index += 1) {
-    graphics.lineTo(index * sampleSpacing, samples[index] ?? worldHeight);
-  }
-  graphics.lineTo(worldWidth, worldHeight);
-  graphics.closePath();
-  graphics.fillPath();
-
-  drawTerrainStrata(graphics, samples, sampleSpacing, 44, theme.terrainMid, 0.34);
-  drawTerrainStrata(graphics, samples, sampleSpacing, 106, theme.terrainDeep, 0.22);
-  drawTerrainStrata(graphics, samples, sampleSpacing, 184, theme.terrainDeep, 0.14);
-
-  graphics.lineStyle(8, theme.grass, 0.96);
-  traceTerrainLine(graphics, samples, sampleSpacing, 0);
-  graphics.lineStyle(3, theme.grassHighlight, 0.54);
-  traceTerrainLine(graphics, samples, sampleSpacing, -4);
-  drawTerrainDecor(graphics, samples, sampleSpacing, mapId, theme);
-}
-
-function drawTerrainStrata(
-  graphics: Phaser.GameObjects.Graphics,
-  samples: number[],
-  sampleSpacing: number,
-  offset: number,
-  color: number,
-  alpha: number
-): void {
-  graphics.lineStyle(3, color, alpha);
-  traceTerrainLine(graphics, samples, sampleSpacing, offset);
-}
-
-function traceTerrainLine(
-  graphics: Phaser.GameObjects.Graphics,
-  samples: number[],
-  sampleSpacing: number,
-  offsetY: number
-): void {
-  graphics.beginPath();
-  graphics.moveTo(0, (samples[0] ?? 0) + offsetY);
-  for (let index = 1; index < samples.length; index += 1) {
-    graphics.lineTo(index * sampleSpacing, (samples[index] ?? 0) + offsetY);
-  }
-  graphics.strokePath();
-}
-
-function drawTerrainDecor(
-  graphics: Phaser.GameObjects.Graphics,
-  samples: number[],
-  sampleSpacing: number,
-  mapId: string | undefined,
-  theme: TerrainTheme
-): void {
-  const propXs =
-    mapId === "klapperkueste"
-      ? [180, 392, 614, 908, 1342, 1644, 2016]
-      : [250, 580, 930, 1290, 1670, 2050];
-
-  for (const propX of propXs) {
-    const scaled = clamp(propX / sampleSpacing, 0, samples.length - 1);
-    const left = Math.floor(scaled);
-    const groundY = samples[left] ?? samples[samples.length - 1] ?? 0;
-    const seed = hashString(`${mapId ?? "map"}:${propX}`);
-
-    graphics.lineStyle(4, 0x3b2a18, 0.45);
-    graphics.lineBetween(propX, groundY - 3, propX, groundY - 26);
-    graphics.lineStyle(3, theme.grass, 0.78);
-    graphics.lineBetween(propX, groundY - 14, propX - 8, groundY - 24);
-    graphics.lineBetween(propX, groundY - 18, propX + 9, groundY - 28);
-
-    graphics.fillStyle(seed % 2 === 0 ? 0x6b7280 : 0x475569, 0.42);
-    graphics.fillEllipse(propX + 20 + (seed % 19), groundY + 8, 28 + (seed % 11), 12 + (seed % 7));
-    graphics.fillStyle(0xfef3c7, 0.5);
-    graphics.fillCircle(propX - 18 - (seed % 9), groundY + 5, 3 + (seed % 4));
-  }
-
-  const signXs = mapId === "seeschlund" ? [520, 1510] : [720, 1830];
-  for (const signX of signXs) {
-    const scaled = clamp(signX / sampleSpacing, 0, samples.length - 1);
-    const groundY = samples[Math.floor(scaled)] ?? samples[samples.length - 1] ?? 0;
-
-    graphics.lineStyle(5, 0x4a2f1b, 0.74);
-    graphics.lineBetween(signX, groundY - 2, signX, groundY - 54);
-    graphics.fillStyle(0x8b5a2b, 0.82);
-    graphics.fillRoundedRect(signX - 34, groundY - 72, 68, 24, 6);
-    graphics.lineStyle(2, 0xfff4cc, 0.38);
-    graphics.lineBetween(signX - 24, groundY - 60, signX + 24, groundY - 60);
-  }
-
-  for (let index = 0; index < samples.length; index += 34) {
-    const x = index * sampleSpacing;
-    const y = (samples[index] ?? 0) + 18 + ((index * 17) % 46);
-
-    graphics.fillStyle(index % 3 === 0 ? theme.terrainDeep : theme.terrainMid, 0.14);
-    graphics.fillCircle(x + ((index * 11) % 42), y, 3 + (index % 5));
-  }
-}
-
 function drawWater(
-  graphics: Phaser.GameObjects.Graphics,
+  backGraphics: Phaser.GameObjects.Graphics,
+  frontGraphics: Phaser.GameObjects.Graphics,
   worldWidth: number,
   worldHeight: number,
   waterlineY: number,
   timeMs: number,
   windStrength: number,
-  windDirection: -1 | 1
+  windDirection: -1 | 1,
+  suddenDeath: boolean
 ): void {
-  graphics.clear();
   const phase = (timeMs / 1000) * (0.8 + windStrength) * windDirection;
   const amplitude = 8 + windStrength * 6;
+  const deepColor = suddenDeath ? 0x3a0d24 : 0x082942;
+  const crestColor = suddenDeath ? 0xfb7185 : 0x7dd3fc;
+  const frontColor = suddenDeath ? 0x59102f : 0x0a3b5c;
 
-  graphics.fillStyle(0x082942, 0.88);
-  graphics.beginPath();
-  graphics.moveTo(0, worldHeight);
+  backGraphics.clear();
+  backGraphics.fillStyle(deepColor, 0.9);
+  backGraphics.beginPath();
+  backGraphics.moveTo(0, worldHeight);
   for (let x = 0; x <= worldWidth; x += 24) {
     const y = waterlineY + Math.sin(x / 48 + phase) * amplitude + Math.cos(x / 120 + phase * 0.8) * 2;
-    graphics.lineTo(x, y);
+    backGraphics.lineTo(x, y);
   }
-  graphics.lineTo(worldWidth, worldHeight);
-  graphics.closePath();
-  graphics.fillPath();
+  backGraphics.lineTo(worldWidth, worldHeight);
+  backGraphics.closePath();
+  backGraphics.fillPath();
 
-  graphics.lineStyle(4, 0x7dd3fc, 0.55);
-  graphics.beginPath();
-  graphics.moveTo(0, waterlineY);
+  // Foreground wave band drawn over the worms: they visibly sink into it.
+  frontGraphics.clear();
+  frontGraphics.fillStyle(frontColor, 0.62);
+  frontGraphics.beginPath();
+  frontGraphics.moveTo(0, worldHeight);
+  for (let x = 0; x <= worldWidth; x += 24) {
+    const y =
+      waterlineY +
+      14 +
+      Math.sin(x / 42 - phase * 1.15) * (amplitude * 0.8) +
+      Math.cos(x / 96 - phase * 0.6) * 3;
+    frontGraphics.lineTo(x, y);
+  }
+  frontGraphics.lineTo(worldWidth, worldHeight);
+  frontGraphics.closePath();
+  frontGraphics.fillPath();
+
+  frontGraphics.lineStyle(4, crestColor, 0.55);
+  frontGraphics.beginPath();
+  frontGraphics.moveTo(0, waterlineY);
   for (let x = 0; x <= worldWidth; x += 24) {
     const y = waterlineY + Math.sin(x / 48 + phase) * amplitude + Math.cos(x / 120 + phase * 0.8) * 2;
-    graphics.lineTo(x, y);
+    frontGraphics.lineTo(x, y);
   }
-  graphics.strokePath();
-
-  graphics.fillStyle(0xbfe9ff, 0.06);
-  graphics.fillRect(0, waterlineY + 8, worldWidth, Math.max(0, worldHeight - waterlineY - 8));
+  frontGraphics.strokePath();
 }
 
 function drawEffects(
@@ -983,7 +704,7 @@ function drawEffects(
   drawWindStreaks(graphics, state, nowMs);
 
   for (const projectile of state.projectiles) {
-    drawProjectile(graphics, state, projectile);
+    drawProjectile(graphics, state, projectile, nowMs);
   }
 
   const liveExplosionIds = new Set(state.explosions.map((explosion) => explosion.id));
@@ -1083,18 +804,87 @@ function drawWindStreaks(
 function drawProjectile(
   graphics: Phaser.GameObjects.Graphics,
   state: ChaosKommandoState,
-  projectile: ChaosKommandoState["projectiles"][number]
+  projectile: ChaosKommandoState["projectiles"][number],
+  nowMs: number
 ): void {
   const angle = Math.atan2(projectile.vy, projectile.vx);
   const color = toColorNumber(findWeapon(state, projectile.weaponId)?.accentColor, 0xf8fafc);
   const tailX = projectile.x - Math.cos(angle) * Math.max(20, projectile.radius * 2.6);
   const tailY = projectile.y - Math.sin(angle) * Math.max(20, projectile.radius * 2.6);
+  const spin = (nowMs / 90 + hashString(projectile.id) % 20) % (Math.PI * 2);
 
-  if (projectile.weaponId === "plunder-pistole") {
+  if (projectile.weaponId === "plunder-pistole" || projectile.weaponId === "minigun") {
     graphics.lineStyle(Math.max(2, projectile.radius * 0.8), color, 0.74);
     graphics.lineBetween(tailX, tailY, projectile.x, projectile.y);
     graphics.fillStyle(0xfff7d6, 0.95);
-    graphics.fillCircle(projectile.x, projectile.y, Math.max(3, projectile.radius * 0.66));
+    graphics.fillCircle(projectile.x, projectile.y, Math.max(3, projectile.radius * 0.8));
+    return;
+  }
+
+  if (projectile.weaponId === "dynamit") {
+    const fuseFlicker = Math.sin(nowMs / 60) * 0.5 + 0.5;
+    graphics.fillStyle(0xdc2626, 0.96);
+    graphics.fillRoundedRect(projectile.x - 6, projectile.y - 14, 12, 26, 4);
+    graphics.lineStyle(2, 0x7f1d1d, 0.9);
+    graphics.strokeRoundedRect(projectile.x - 6, projectile.y - 14, 12, 26, 4);
+    graphics.lineStyle(2, 0xd6d3d1, 0.9);
+    graphics.lineBetween(projectile.x, projectile.y - 14, projectile.x + 4, projectile.y - 22);
+    graphics.fillStyle(0xfbbf24, 0.6 + fuseFlicker * 0.4);
+    graphics.fillCircle(projectile.x + 4, projectile.y - 22, 3 + fuseFlicker * 2.4);
+    graphics.fillStyle(0xfff7d6, 0.8);
+    graphics.fillCircle(projectile.x + 4, projectile.y - 22, 1.6);
+    return;
+  }
+
+  if (projectile.weaponId === "heilige-granate") {
+    graphics.fillStyle(0xfacc15, 0.28);
+    graphics.fillCircle(projectile.x, projectile.y, projectile.radius * 2.2);
+    graphics.fillStyle(0xeab308, 0.97);
+    graphics.fillCircle(projectile.x, projectile.y, projectile.radius * 1.15);
+    graphics.lineStyle(2, 0x854d0e, 0.9);
+    graphics.strokeCircle(projectile.x, projectile.y, projectile.radius * 1.15);
+    graphics.fillStyle(0xb45309, 0.95);
+    graphics.fillRect(projectile.x - 2, projectile.y - projectile.radius * 1.9, 4, projectile.radius * 0.9);
+    graphics.fillRect(
+      projectile.x - projectile.radius * 0.5,
+      projectile.y - projectile.radius * 1.72,
+      projectile.radius,
+      4
+    );
+    graphics.fillStyle(0xfff7d6, 0.6);
+    graphics.fillCircle(projectile.x - projectile.radius * 0.35, projectile.y - projectile.radius * 0.4, projectile.radius * 0.3);
+    return;
+  }
+
+  if (projectile.weaponId === "banane") {
+    graphics.lineStyle(3, 0xfff7d6, 0.3);
+    graphics.lineBetween(tailX, tailY, projectile.x, projectile.y);
+    const bend = 0.8;
+    graphics.lineStyle(Math.max(4, projectile.radius * 0.9), 0xfde047, 0.97);
+    graphics.beginPath();
+    graphics.arc(projectile.x, projectile.y, projectile.radius * 1.15, spin, spin + Math.PI * bend, false);
+    graphics.strokePath();
+    graphics.lineStyle(2, 0x854d0e, 0.85);
+    graphics.beginPath();
+    graphics.arc(projectile.x, projectile.y, projectile.radius * 1.15, spin, spin + 0.3, false);
+    graphics.strokePath();
+    return;
+  }
+
+  if (projectile.weaponId === "luftschlag") {
+    graphics.fillStyle(0x64748b, 0.97);
+    graphics.fillEllipse(projectile.x, projectile.y, projectile.radius * 1.6, projectile.radius * 2.4);
+    graphics.fillStyle(0x334155, 0.95);
+    graphics.fillTriangle(
+      projectile.x - projectile.radius * 0.9,
+      projectile.y - projectile.radius * 1.3,
+      projectile.x + projectile.radius * 0.9,
+      projectile.y - projectile.radius * 1.3,
+      projectile.x,
+      projectile.y - projectile.radius * 2.1
+    );
+    graphics.fillStyle(0xfff7d6, 0.4);
+    graphics.fillCircle(projectile.x - projectile.radius * 0.3, projectile.y + projectile.radius * 0.4, projectile.radius * 0.34);
     return;
   }
 
@@ -1278,7 +1068,18 @@ function drawActors(
 ): void {
   graphics.clear();
   const selection = resolveSelection(state);
-  const gravestoneMercenaryIds = new Set(state.gravestones.map((gravestone) => gravestone.mercenaryId));
+
+  for (const gravestone of state.gravestones) {
+    drawGravestone(graphics, gravestone);
+  }
+
+  for (const mine of state.mines) {
+    drawMine(graphics, mine, nowMs);
+  }
+
+  for (const crate of state.crates) {
+    drawCrate(graphics, crate, state, nowMs);
+  }
 
   if (selection.mercenary && selection.weapon && (!state.turn.hasFired || state.turn.chargeRatio > 0)) {
     drawAimGuide(graphics, state, selection.mercenary, selection.weapon);
@@ -1286,11 +1087,12 @@ function drawActors(
 
   for (const player of state.players) {
     for (const mercenary of player.mercenaries) {
-      if (!mercenary.alive && gravestoneMercenaryIds.has(mercenary.id)) {
-        continue;
-      }
-
-      drawMercenaryOverlay(graphics, mercenary, selection.mercenary?.id === mercenary.id, nowMs);
+      drawMercenaryOverlay(
+        graphics,
+        mercenary,
+        selection.mercenary?.id === mercenary.id,
+        nowMs
+      );
     }
   }
 }
@@ -1299,30 +1101,31 @@ function drawMercenaryOverlay(
   graphics: Phaser.GameObjects.Graphics,
   mercenary: ChaosKommandoMercenaryState,
   isActive: boolean,
-  _nowMs: number
+  nowMs: number
 ): void {
   if (!mercenary.alive) {
     return;
   }
 
-  const radius = resolveDisplayMercenaryRadius(mercenary) * 1.22;
+  const radius = mercenary.radius * 1.3;
   const x = mercenary.x;
-  const y = mercenary.y + radius * 0.14;
+  const y = mercenary.y;
   const teamColor = toColorNumber(mercenary.teamColor, 0x38bdf8);
   const hpRatio = resolveHealthRatio(mercenary.hp, mercenary.maxHp);
-  const barWidth = radius * 2.4;
+  const barWidth = radius * 2.2;
   const barX = x - barWidth / 2;
-  const barY = y - radius * 1.88;
+  const barY = y - radius * 2.72;
 
   graphics.fillStyle(0x020617, 0.82);
-  graphics.fillRoundedRect(barX - 1, barY - 1, barWidth + 2, 10, 5);
+  graphics.fillRoundedRect(barX - 1, barY - 1, barWidth + 2, 9, 4);
   graphics.fillStyle(0x0f172a, 0.96);
-  graphics.fillRoundedRect(barX, barY, barWidth, 8, 4);
+  graphics.fillRoundedRect(barX, barY, barWidth, 7, 3);
   graphics.fillStyle(hpRatio > 0.5 ? 0x22c55e : hpRatio > 0.25 ? 0xf59e0b : 0xef4444, 1);
-  graphics.fillRoundedRect(barX, barY, hpRatio > 0 ? Math.max(6, barWidth * hpRatio) : 0, 8, 4);
+  graphics.fillRoundedRect(barX, barY, hpRatio > 0 ? Math.max(5, barWidth * hpRatio) : 0, 7, 3);
 
   if (isActive) {
-    drawActiveArrow(graphics, x, y - radius * 2.2, teamColor);
+    const bounce = Math.sin(nowMs / 220) * 5;
+    drawActiveArrow(graphics, x, y - radius * 3.35 + bounce, teamColor);
   }
 }
 
@@ -1333,11 +1136,116 @@ function drawActiveArrow(
   color: number
 ): void {
   graphics.fillStyle(color, 0.96);
-  graphics.fillTriangle(x - 12, y - 8, x + 12, y - 8, x, y + 12);
+  graphics.fillTriangle(x - 11, y - 8, x + 11, y - 8, x, y + 11);
   graphics.lineStyle(2, 0xf8fafc, 0.85);
-  graphics.strokeTriangle(x - 12, y - 8, x + 12, y - 8, x, y + 12);
-  graphics.lineStyle(3, color, 0.42);
-  graphics.lineBetween(x, y + 12, x, y + 30);
+  graphics.strokeTriangle(x - 11, y - 8, x + 11, y - 8, x, y + 11);
+}
+
+function drawGravestone(
+  graphics: Phaser.GameObjects.Graphics,
+  gravestone: ChaosKommandoState["gravestones"][number]
+): void {
+  const r = gravestone.radius;
+  const x = gravestone.x;
+  const y = gravestone.y;
+  const tilt = gravestone.grounded ? 0 : clamp(gravestone.vx * 0.002, -0.16, 0.16);
+
+  graphics.fillStyle(0x64748b, 0.97);
+  graphics.fillRoundedRect(x - r * 0.85 + tilt * 20, y - r * 1.15, r * 1.7, r * 1.9, { tl: r * 0.8, tr: r * 0.8, bl: 3, br: 3 });
+  graphics.lineStyle(2, 0x334155, 0.9);
+  graphics.strokeRoundedRect(x - r * 0.85 + tilt * 20, y - r * 1.15, r * 1.7, r * 1.9, { tl: r * 0.8, tr: r * 0.8, bl: 3, br: 3 });
+  graphics.fillStyle(0x334155, 0.95);
+  graphics.fillRect(x - 2, y - r * 0.75, 4, r * 1.05);
+  graphics.fillRect(x - r * 0.42, y - r * 0.45, r * 0.84, 4);
+  graphics.fillStyle(0x94a3b8, 0.4);
+  graphics.fillEllipse(x - r * 0.3, y - r * 0.7, r * 0.4, r * 0.24);
+}
+
+function drawMine(
+  graphics: Phaser.GameObjects.Graphics,
+  mine: ChaosKommandoState["mines"][number],
+  nowMs: number
+): void {
+  const r = mine.radius;
+  const triggered = mine.explodesAt !== null;
+  const blink = triggered
+    ? Math.sin(nowMs / 60) > 0
+    : Math.sin(nowMs / 600 + mine.x * 0.05) > 0.65;
+
+  // Spikes.
+  graphics.lineStyle(3, 0x1e293b, 0.95);
+  for (let index = 0; index < 6; index += 1) {
+    const angle = (Math.PI * 2 * index) / 6 + Math.PI / 6;
+    graphics.lineBetween(
+      mine.x + Math.cos(angle) * r * 0.6,
+      mine.y + Math.sin(angle) * r * 0.6,
+      mine.x + Math.cos(angle) * r * 1.45,
+      mine.y + Math.sin(angle) * r * 1.45
+    );
+  }
+
+  graphics.fillStyle(0x1e293b, 0.97);
+  graphics.fillCircle(mine.x, mine.y, r);
+  graphics.lineStyle(2, 0x0f172a, 0.9);
+  graphics.strokeCircle(mine.x, mine.y, r);
+  graphics.fillStyle(0x475569, 0.7);
+  graphics.fillCircle(mine.x - r * 0.3, mine.y - r * 0.32, r * 0.3);
+
+  // Blinking light: green while dormant, furious red when triggered.
+  const lightColor = triggered ? 0xef4444 : 0x4ade80;
+  graphics.fillStyle(lightColor, blink ? 1 : 0.25);
+  graphics.fillCircle(mine.x, mine.y - r * 0.1, r * 0.32);
+
+  if (triggered && blink) {
+    graphics.fillStyle(0xef4444, 0.2);
+    graphics.fillCircle(mine.x, mine.y, r * 2.4);
+  }
+}
+
+function drawCrate(
+  graphics: Phaser.GameObjects.Graphics,
+  crate: ChaosKommandoState["crates"][number],
+  state: ChaosKommandoState,
+  nowMs: number
+): void {
+  const r = crate.radius;
+  const x = crate.x;
+  const y = crate.y;
+  const accent = toColorNumber(findWeapon(state, crate.weaponId)?.accentColor, 0xfbbf24);
+
+  // Parachute while falling.
+  if (!crate.grounded) {
+    const sway = Math.sin(nowMs / 320 + x * 0.01) * r * 0.4;
+    const canopyX = x + sway;
+    const canopyY = y - r * 3.1;
+
+    graphics.fillStyle(0xf8fafc, 0.92);
+    graphics.beginPath();
+    graphics.arc(canopyX, canopyY, r * 1.9, Math.PI, Math.PI * 2, false);
+    graphics.closePath();
+    graphics.fillPath();
+    graphics.lineStyle(2, 0xcbd5e1, 0.9);
+    graphics.beginPath();
+    graphics.arc(canopyX, canopyY, r * 1.9, Math.PI, Math.PI * 2, false);
+    graphics.strokePath();
+    graphics.lineStyle(1.5, 0x94a3b8, 0.85);
+    graphics.lineBetween(canopyX - r * 1.7, canopyY, x - r * 0.7, y - r * 0.8);
+    graphics.lineBetween(canopyX + r * 1.7, canopyY, x + r * 0.7, y - r * 0.8);
+    graphics.lineBetween(canopyX, canopyY, x, y - r * 0.9);
+  }
+
+  // Wooden box with accent stripe.
+  graphics.fillStyle(0x926640, 0.97);
+  graphics.fillRoundedRect(x - r, y - r * 0.85, r * 2, r * 1.7, 3);
+  graphics.lineStyle(2, 0x5d4027, 0.95);
+  graphics.strokeRoundedRect(x - r, y - r * 0.85, r * 2, r * 1.7, 3);
+  graphics.lineStyle(2, 0x5d4027, 0.7);
+  graphics.lineBetween(x - r, y, x + r, y);
+  graphics.fillStyle(accent, 0.95);
+  graphics.fillRect(x - r * 0.24, y - r * 0.85, r * 0.48, r * 1.7);
+  const glint = Math.sin(nowMs / 260) * 0.5 + 0.5;
+  graphics.fillStyle(0xfff7d6, 0.25 + glint * 0.3);
+  graphics.fillCircle(x - r * 0.5, y - r * 0.42, r * 0.2);
 }
 
 function drawAimGuide(
@@ -1347,9 +1255,8 @@ function drawAimGuide(
   weapon: NonNullable<ReturnType<typeof findWeapon>>
 ): void {
   const color = toColorNumber(weapon.accentColor, 0xfbbf24);
-  const displayRadius = resolveDisplayMercenaryRadius(mercenary) * 1.24;
-  const startX = mercenary.x + Math.cos(mercenary.aimAngleRad) * displayRadius * 0.96;
-  const startY = mercenary.y + displayRadius * 0.16 + Math.sin(mercenary.aimAngleRad) * displayRadius * 0.78;
+  const startX = mercenary.x + Math.cos(mercenary.aimAngleRad) * mercenary.radius * 1.1;
+  const startY = mercenary.y - mercenary.radius * 0.4 + Math.sin(mercenary.aimAngleRad) * mercenary.radius * 0.9;
   const crosshair = resolveCrosshairPoint(state);
 
   if (!crosshair) {
@@ -1433,9 +1340,54 @@ function drawAimGuide(
   }
 }
 
-function syncActiveMercenaryLabel(
-  label: Phaser.GameObjects.Text,
-  _state: ChaosKommandoState
+/**
+ * Floating name plates above every living marshmallow.
+ */
+function syncNameLabels(
+  scene: Phaser.Scene,
+  renderState: ChaosKommandoRenderState,
+  state: ChaosKommandoState
 ): void {
-  label.setVisible(false);
+  const knownIds = new Set<string>();
+
+  for (const player of state.players) {
+    for (const mercenary of player.mercenaries) {
+      if (!mercenary.alive) {
+        continue;
+      }
+
+      knownIds.add(mercenary.id);
+      let label = renderState.nameLabels.get(mercenary.id);
+
+      if (!label) {
+        label = scene.add
+          .text(0, 0, mercenary.name, {
+            fontFamily: '"Nunito Sans", "Arial", sans-serif',
+            fontSize: "13px",
+            fontStyle: "bold",
+            color: "#f8fafc",
+            backgroundColor: "rgba(2, 6, 23, 0.72)"
+          })
+          .setOrigin(0.5, 1)
+          .setPadding(6, 2, 6, 2)
+          .setDepth(25);
+        renderState.nameLabels.set(mercenary.id, label);
+      }
+
+      label
+        .setVisible(true)
+        .setText(mercenary.name)
+        .setColor(mercenary.teamColor || "#f8fafc")
+        .setPosition(mercenary.x, mercenary.y - mercenary.radius * 3.65);
+    }
+  }
+
+  for (const [mercenaryId, label] of renderState.nameLabels.entries()) {
+    if (knownIds.has(mercenaryId)) {
+      continue;
+    }
+
+    label.destroy();
+    renderState.nameLabels.delete(mercenaryId);
+  }
 }

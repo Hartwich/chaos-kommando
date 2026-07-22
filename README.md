@@ -6,7 +6,9 @@ Turn-based cartoon artillery game for Open Party Lab with mercenaries, wild weap
 
 ## Status
 
-Alpha. The turn-based artillery loop is playable. Needs weapon balance, terrain readability, and controller feedback polish.
+Alpha. Marshmallow artillery overhaul with true 2D destructible terrain (craters, tunnels, overhangs), 16 weapons (incl. dynamite, holy grenade, banana bomb, air strike, baseball bat, minigun), proximity mines, supply crates, per-turn wind, retreat time, sudden death rising water, a dynamic zoom camera, and a continuous toasted-marshmallow animation rig covering locomotion, aiming, charging, attacks, hits, victory, and defeat.
+
+Character rendering uses a fixed world pivot with separate torso, arm, foot, face, gear, and weapon layers. Eyes track the live aim direction, limbs move on continuous curves, and weapon-specific grip points keep both hands attached while aiming. All 16 weapons have dedicated host carry art; gadgets remain intentionally separate from the current movement-and-weapon polish pass.
 
 ## Run Through Open Party Lab
 
