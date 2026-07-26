@@ -69,12 +69,20 @@ export type ChaosKommandoArsenalArtId =
   | "marshmallow-blaster"
   | "minigun"
   | "revolver"
-  | "frying-pan"
+  | "baseball-bat"
   | "frag-grenade"
   | "cluster-grenade"
   | "sticky-grenade"
   | "smoke-grenade"
-  | "banana-bomb";
+  | "banana-bomb"
+  | "duck-grenade"
+  | "dynamite-bundle"
+  | "airstrike-radio"
+  | "airstrike-flare-gun"
+  | "airstrike-signal-flare"
+  | "airstrike-whistle"
+  | "proximity-mine"
+  | "supply-crate";
 
 interface ChaosKommandoArsenalArt {
   textureKey: string;
@@ -91,6 +99,7 @@ const longGunAspect = 1280 / 768;
 const sidearmAspect = 768 / 640;
 const meleeAspect = 1024 / 768;
 const throwableAspect = 1;
+const equipmentAspect = 1;
 
 export const chaosKommandoArsenalArt: Record<ChaosKommandoArsenalArtId, ChaosKommandoArsenalArt> = {
   "rocket-launcher": art(longGunAspect, [0.25, 0.68], [0.59, 0.68]),
@@ -100,12 +109,20 @@ export const chaosKommandoArsenalArt: Record<ChaosKommandoArsenalArtId, ChaosKom
   "marshmallow-blaster": art(longGunAspect, [0.2, 0.73], [0.617, 0.75]),
   minigun: art(longGunAspect, [0.086, 0.578], [0.492, 0.68]),
   revolver: art(sidearmAspect, [0.18, 0.61], null),
-  "frying-pan": art(meleeAspect, [0.127, 0.5], null),
+  "airstrike-flare-gun": art(sidearmAspect, [0.16, 0.7], null),
+  "baseball-bat": art(meleeAspect, [0.09, 0.79], null),
   "frag-grenade": art(throwableAspect, [0.47, 0.52], null),
   "cluster-grenade": art(throwableAspect, [0.47, 0.5], null),
   "sticky-grenade": art(throwableAspect, [0.49, 0.55], null),
   "smoke-grenade": art(throwableAspect, [0.49, 0.52], null),
-  "banana-bomb": art(throwableAspect, [0.6, 0.55], null)
+  "banana-bomb": art(throwableAspect, [0.6, 0.55], null),
+  "duck-grenade": art(throwableAspect, [0.52, 0.52], null),
+  "dynamite-bundle": art(throwableAspect, [0.5, 0.56], null),
+  "airstrike-signal-flare": art(throwableAspect, [0.51, 0.48], null),
+  "airstrike-whistle": art(throwableAspect, [0.47, 0.53], null),
+  "airstrike-radio": art(equipmentAspect, [0.5, 0.34], null),
+  "proximity-mine": art(equipmentAspect, [0.5, 0.46], null),
+  "supply-crate": art(equipmentAspect, [0.5, 0.49], null)
 };
 
 function art(
@@ -163,15 +180,19 @@ export const chaosKommandoWeaponVisuals: Record<ChaosKommandoWeaponId, ChaosKomm
   "keks-moerser": weapon("plunger-launcher", "two-handed", 3.5, 0),
   minigun: weapon("minigun", "two-handed", 3.9, 0),
   "plunder-pistole": weapon("revolver", "pistol", 1.9, 0),
-  "enten-granate": weapon("frag-grenade", "throwable", 1.15, 0),
+  "enten-granate": weapon("duck-grenade", "throwable", 1.25, 0),
   "splitter-granate": weapon("frag-grenade", "throwable", 1.15, 0),
   "heilige-granate": weapon("cluster-grenade", "throwable", 1.25, 0),
   banane: weapon("banana-bomb", "throwable", 1.35, 0),
   "gummi-huhn": weapon("sticky-grenade", "throwable", 1.2, 0),
   "seifenblasen-bombe": weapon("smoke-grenade", "throwable", 1.15, 0),
-  dynamit: weapon("sticky-grenade", "placeable", 1.2, 0),
-  "baseball-schlaeger": weapon("frying-pan", "melee", 2.8, -12),
-  luftschlag: weapon("smoke-grenade", "remote", 1.15, 0)
+  dynamit: weapon("dynamite-bundle", "placeable", 1.3, 0),
+  "baseball-schlaeger": weapon("baseball-bat", "melee", 3, 34),
+  "funk-bombenteppich": weapon("airstrike-radio", "remote", 1.4, 0),
+  "leucht-salve": weapon("airstrike-flare-gun", "pistol", 1.9, 0),
+  "signal-schauer": weapon("airstrike-signal-flare", "throwable", 1.2, 0),
+  "pfeifen-sturzflug": weapon("airstrike-whistle", "remote", 1.15, 0),
+  seilzug: weapon("proximity-mine", "remote", 1.2, 0)
 };
 
 function resolvePosture(handling: ChaosKommandoWeaponHandling): ChaosKommandoWeaponPosture {

@@ -2,6 +2,7 @@ import Phaser from "phaser";
 import type {
   ChaosKommandoCraterState,
   ChaosKommandoMercenaryState,
+  ChaosKommandoPlatformState,
   ChaosKommandoState,
   ChaosKommandoWeaponId
 } from "../protocol.js";
@@ -33,7 +34,8 @@ const idleWorld = {
     const ridge = Math.sin(x / 140) * 54 + Math.cos(x / 56) * 18 + Math.sin(x / 310) * 32;
     return clamp(552 + ridge, 455, 720);
   }),
-  craters: [] as ChaosKommandoCraterState[]
+  craters: [] as ChaosKommandoCraterState[],
+  platforms: [] as ChaosKommandoPlatformState[]
 };
 
 const terrainTextureKey = "chaos-kommando-terrain";
@@ -46,6 +48,7 @@ interface TerrainLike {
   sampleSpacing: number;
   samples: number[];
   craters: ChaosKommandoCraterState[];
+  platforms: ChaosKommandoPlatformState[];
 }
 
 export interface ChaosKommandoRenderState {
@@ -62,12 +65,77 @@ export interface ChaosKommandoRenderState {
   cameraCenterX: number;
   cameraCenterY: number;
   cameraZoom: number;
+  camera: CameraDirector;
 }
 
 interface CameraTarget {
   centerX: number;
   centerY: number;
   zoom: number;
+}
+
+/**
+ * Kameraregie nach einem Angriff, in fester Reihenfolge:
+ *
+ * `overview`  alles im Bild
+ * `casualty`  Blick auf den Gefallenen und seinen Grabstein
+ * `cheer`     Jubel des gegnerischen Teams
+ * `crate`     eingeschwebte Nachschubkiste
+ * `banner`    Name des naechsten Teams, danach Zoom auf den Soeldner
+ * `follow`    normales Verfolgen
+ *
+ * Phasen ohne Anlass werden uebersprungen: kein Toter, keine Kiste, kein Jubel.
+ */
+type CameraPhase = "follow" | "overview" | "casualty" | "cheer" | "crate" | "banner";
+
+interface CameraDirector {
+  phase: CameraPhase;
+  phaseEndsAtMs: number;
+  /** Bis dahin faehrt die Kamera betont langsam zurueck zum Geschehen. */
+  calmUntilMs: number;
+  casualtyX: number | null;
+  casualtyY: number | null;
+  cheerX: number | null;
+  cheerY: number | null;
+  crateX: number | null;
+  crateY: number | null;
+  aliveById: Map<string, boolean>;
+  seenExplosionIds: Set<string>;
+  seenCrateIds: Set<string>;
+  /** Name des Teams, das als naechstes dran ist. Treibt das Banner. */
+  bannerText: string;
+  bannerUntilMs: number;
+  lastTurnNumber: number;
+}
+
+const cameraPhaseDurationsMs = {
+  overview: 1_600,
+  casualty: 1_400,
+  /** Dreifache Jubeldauer, wie gewuenscht. */
+  cheer: 4_500,
+  crate: 1_300,
+  banner: 1_500,
+  calm: 1_200
+} as const;
+
+function createCameraDirector(): CameraDirector {
+  return {
+    phase: "follow",
+    phaseEndsAtMs: 0,
+    calmUntilMs: 0,
+    casualtyX: null,
+    casualtyY: null,
+    cheerX: null,
+    cheerY: null,
+    crateX: null,
+    crateY: null,
+    aliveById: new Map(),
+    seenExplosionIds: new Set(),
+    seenCrateIds: new Set(),
+    bannerText: "",
+    bannerUntilMs: 0,
+    lastTurnNumber: 0
+  };
 }
 
 interface TerrainTheme {
@@ -81,7 +149,18 @@ interface TerrainTheme {
   terrainDeep: string;
   grass: string;
   grassHighlight: string;
+  grassShadow: string;
   craterRim: string;
+  /** Helle Gesteinsader in den Erdschichten. */
+  rockLight: string;
+  /** Dunkle Gesteinsader und Kieselschatten. */
+  rockDark: string;
+  /** Wurzeln unter der Grasnarbe. */
+  root: string;
+  /** Duenne Sandschicht direkt unter dem Gras. */
+  topsoil: string;
+  hillMist: number;
+  treeLine: number;
 }
 
 export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKommandoRenderState {
@@ -109,7 +188,8 @@ export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKomman
     explosionSeenAtMs: new Map(),
     cameraCenterX: idleWorld.width / 2,
     cameraCenterY: idleWorld.height / 2,
-    cameraZoom: 0.92
+    cameraZoom: 0.92,
+    camera: createCameraDirector()
   };
 }
 
@@ -129,12 +209,27 @@ export function destroyChaosKommandoRenderState(renderState: ChaosKommandoRender
   renderState.explosionSeenAtMs.clear();
 }
 
+/** Text des Namensbanners, oder null wenn gerade keines laeuft. */
+export function resolveChaosKommandoBanner(
+  renderState: ChaosKommandoRenderState,
+  nowMs: number
+): string | null {
+  return nowMs < renderState.camera.bannerUntilMs && renderState.camera.bannerText
+    ? renderState.camera.bannerText
+    : null;
+}
+
+/** True, solange die Regie laeuft und der Zug noch nicht freigegeben ist. */
+export function isChaosKommandoCameraScripted(renderState: ChaosKommandoRenderState): boolean {
+  return renderState.camera.phase !== "follow";
+}
+
 export function snapChaosKommandoCamera(
   scene: Phaser.Scene,
   renderState: ChaosKommandoRenderState,
   state: ChaosKommandoState
 ): void {
-  const target = resolveCameraTarget(scene, state);
+  const target = resolveCameraTarget(scene, state, renderState.camera);
   renderState.cameraCenterX = target.centerX;
   renderState.cameraCenterY = target.centerY;
   renderState.cameraZoom = target.zoom;
@@ -181,11 +276,16 @@ export function renderChaosKommandoFrame(
   state: ChaosKommandoState,
   nowMs: number
 ): void {
-  const target = resolveCameraTarget(scene, state);
-  const trackingSpeed = state.projectiles.length > 0 ? 0.18 : 0.11;
+  updateCameraDirector(renderState.camera, state, nowMs);
+  const target = resolveCameraTarget(scene, state, renderState.camera);
+  // Waehrend der Regie und kurz danach bewusst traege nachfuehren.
+  const scripted = renderState.camera.phase !== "follow";
+  const calming = nowMs < renderState.camera.calmUntilMs;
+  const trackingSpeed = scripted || calming ? 0.045 : state.projectiles.length > 0 ? 0.18 : 0.11;
+  const zoomSpeed = scripted || calming ? 0.035 : 0.1;
   renderState.cameraCenterX = Phaser.Math.Linear(renderState.cameraCenterX, target.centerX, trackingSpeed);
   renderState.cameraCenterY = Phaser.Math.Linear(renderState.cameraCenterY, target.centerY, trackingSpeed * 0.9);
-  renderState.cameraZoom = Phaser.Math.Linear(renderState.cameraZoom, target.zoom, 0.1);
+  renderState.cameraZoom = Phaser.Math.Linear(renderState.cameraZoom, target.zoom, zoomSpeed);
   applyCamera(scene, renderState, state.terrain.width, state.terrain.height);
 
   drawSky(
@@ -242,10 +342,219 @@ function applyCamera(
  * Artillery camera: close-up while aiming, wide while shots fly,
  * whole map on game end.
  */
-function resolveCameraTarget(scene: Phaser.Scene, state: ChaosKommandoState): CameraTarget {
+/**
+ * Fuehrt die Regie weiter. Ausgeloest wird sie vom ersten neuen Einschlag
+ * eines Zuges; Todesfaelle haengen die beiden Zusatzphasen an.
+ */
+function updateCameraDirector(
+  director: CameraDirector,
+  state: ChaosKommandoState,
+  nowMs: number
+): void {
+  let impact = false;
+  for (const explosion of state.explosions) {
+    if (director.seenExplosionIds.has(explosion.id)) {
+      continue;
+    }
+    director.seenExplosionIds.add(explosion.id);
+    impact = true;
+  }
+  if (director.seenExplosionIds.size > 64) {
+    director.seenExplosionIds = new Set([...director.seenExplosionIds].slice(-32));
+  }
+
+  // Neu eingeschwebte Kiste merken, damit die Regie sie zeigen kann.
+  for (const crate of state.crates) {
+    if (director.seenCrateIds.has(crate.id)) {
+      continue;
+    }
+    director.seenCrateIds.add(crate.id);
+    director.crateX = crate.x;
+    director.crateY = crate.y;
+  }
+
+  // Gefallene einsammeln und den Jubelpunkt beim Gegnerteam setzen.
+  for (const player of state.players) {
+    for (const mercenary of player.mercenaries) {
+      const wasAlive = director.aliveById.get(mercenary.id);
+      director.aliveById.set(mercenary.id, mercenary.alive);
+
+      if (wasAlive !== true || mercenary.alive) {
+        continue;
+      }
+
+      director.casualtyX = mercenary.x;
+      director.casualtyY = mercenary.y;
+
+      const mourners = state.players
+        .filter((entry) => entry.playerId !== mercenary.playerId)
+        .flatMap((entry) => entry.mercenaries.filter((entry2) => entry2.alive));
+
+      if (mourners.length > 0) {
+        director.cheerX = mourners.reduce((sum, entry) => sum + entry.x, 0) / mourners.length;
+        director.cheerY = mourners.reduce((sum, entry) => sum + entry.y, 0) / mourners.length;
+      }
+    }
+  }
+
+  if (state.winnerPlayerId || state.isDraw) {
+    director.phase = "follow";
+    director.bannerUntilMs = 0;
+    return;
+  }
+
+  // Zugwechsel: Grabstein am Boden statt Leiche zeigen, dann Banner.
+  if (state.turn.turnNumber !== director.lastTurnNumber) {
+    director.lastTurnNumber = state.turn.turnNumber;
+    const grave = state.gravestones[state.gravestones.length - 1];
+
+    if (grave && director.casualtyX !== null) {
+      director.casualtyX = grave.x;
+      director.casualtyY = grave.y;
+    }
+  }
+
+  if (impact && director.phase === "follow") {
+    director.phase = "overview";
+    director.phaseEndsAtMs = nowMs + cameraPhaseDurationsMs.overview;
+    return;
+  }
+
+  if (director.phase === "follow" || nowMs < director.phaseEndsAtMs) {
+    return;
+  }
+
+  const next = (phase: CameraPhase, durationMs: number): void => {
+    director.phase = phase;
+    director.phaseEndsAtMs = nowMs + durationMs;
+  };
+
+  if (director.phase === "overview") {
+    if (director.casualtyX !== null) {
+      next("casualty", cameraPhaseDurationsMs.casualty);
+      return;
+    }
+    if (director.cheerX !== null) {
+      next("cheer", cameraPhaseDurationsMs.cheer);
+      return;
+    }
+    if (director.crateX !== null) {
+      next("crate", cameraPhaseDurationsMs.crate);
+      return;
+    }
+    startCameraBanner(director, state, nowMs);
+    return;
+  }
+
+  if (director.phase === "casualty") {
+    if (director.cheerX !== null) {
+      next("cheer", cameraPhaseDurationsMs.cheer);
+      return;
+    }
+    if (director.crateX !== null) {
+      next("crate", cameraPhaseDurationsMs.crate);
+      return;
+    }
+    startCameraBanner(director, state, nowMs);
+    return;
+  }
+
+  if (director.phase === "cheer") {
+    if (director.crateX !== null) {
+      next("crate", cameraPhaseDurationsMs.crate);
+      return;
+    }
+    startCameraBanner(director, state, nowMs);
+    return;
+  }
+
+  if (director.phase === "crate") {
+    startCameraBanner(director, state, nowMs);
+    return;
+  }
+
+  finishCameraSequence(director, nowMs);
+}
+
+/** Blendet den Namen des naechsten Teams ein und faehrt dabei schon hin. */
+function startCameraBanner(
+  director: CameraDirector,
+  state: ChaosKommandoState,
+  nowMs: number
+): void {
+  const nextPlayer = state.players.find((player) => player.playerId === state.turn.currentPlayerId);
+  const nextMercenary = nextPlayer?.mercenaries.find(
+    (mercenary) => mercenary.id === state.turn.activeMercenaryId
+  );
+
+  director.phase = "banner";
+  director.phaseEndsAtMs = nowMs + cameraPhaseDurationsMs.banner;
+  director.bannerText = nextPlayer
+    ? nextMercenary
+      ? `${nextPlayer.name} · ${nextMercenary.name}`
+      : nextPlayer.name
+    : "";
+  director.bannerUntilMs = nowMs + cameraPhaseDurationsMs.banner;
+  director.casualtyX = null;
+  director.casualtyY = null;
+  director.cheerX = null;
+  director.cheerY = null;
+  director.crateX = null;
+  director.crateY = null;
+}
+
+function finishCameraSequence(director: CameraDirector, nowMs: number): void {
+  director.phase = "follow";
+  director.phaseEndsAtMs = 0;
+  director.calmUntilMs = nowMs + cameraPhaseDurationsMs.calm;
+  director.casualtyX = null;
+  director.casualtyY = null;
+  director.cheerX = null;
+  director.cheerY = null;
+  director.crateX = null;
+  director.crateY = null;
+}
+
+function resolveCameraTarget(
+  scene: Phaser.Scene,
+  state: ChaosKommandoState,
+  director: CameraDirector
+): CameraTarget {
   const worldWidth = state.terrain.width;
   const worldHeight = state.terrain.height;
   const fitZoom = Math.min(scene.scale.width / worldWidth, scene.scale.height / worldHeight);
+
+  if (director.phase === "overview") {
+    return {
+      centerX: worldWidth / 2,
+      centerY: worldHeight / 2 - 40,
+      zoom: fitZoom * 0.97
+    };
+  }
+
+  if (director.phase === "casualty" && director.casualtyX !== null && director.casualtyY !== null) {
+    return {
+      centerX: director.casualtyX,
+      centerY: director.casualtyY - 40,
+      zoom: clamp(Math.min(scene.scale.width / 1_120, scene.scale.height / 720), fitZoom, 1.1)
+    };
+  }
+
+  if (director.phase === "cheer" && director.cheerX !== null && director.cheerY !== null) {
+    return {
+      centerX: director.cheerX,
+      centerY: director.cheerY - 50,
+      zoom: clamp(Math.min(scene.scale.width / 1_260, scene.scale.height / 800), fitZoom, 1)
+    };
+  }
+
+  if (director.phase === "crate" && director.crateX !== null && director.crateY !== null) {
+    return {
+      centerX: director.crateX,
+      centerY: director.crateY - 30,
+      zoom: clamp(Math.min(scene.scale.width / 1_180, scene.scale.height / 760), fitZoom, 1.05)
+    };
+  }
 
   if (state.winnerPlayerId || state.isDraw) {
     return {
@@ -345,12 +654,19 @@ function resolveTerrainTheme(mapId?: string): TerrainTheme {
         skyGlow: 0xfff0d1,
         hillNear: 0x7890a3,
         hillFar: 0xa1b6c5,
+        hillMist: 0xc6d7e2,
+        treeLine: 0x5c7183,
         terrainBody: "#8c5d33",
         terrainMid: "#6e4725",
         terrainDeep: "#3f2814",
         grass: "#8bcf52",
         grassHighlight: "#eaf9b8",
-        craterRim: "#33200f"
+        grassShadow: "#4f7f2e",
+        craterRim: "#33200f",
+        rockLight: "#a67b4c",
+        rockDark: "#4a2f18",
+        root: "#6b4a26",
+        topsoil: "#a9743f"
       };
     case "seeschlund":
       return {
@@ -359,12 +675,19 @@ function resolveTerrainTheme(mapId?: string): TerrainTheme {
         skyGlow: 0xffefcb,
         hillNear: 0x607a89,
         hillFar: 0x91adbf,
+        hillMist: 0xbcd0dd,
+        treeLine: 0x4b626f,
         terrainBody: "#7b4f32",
         terrainMid: "#5f3e24",
         terrainDeep: "#331f10",
         grass: "#7fc550",
         grassHighlight: "#e8f7af",
-        craterRim: "#2c1b0c"
+        grassShadow: "#47762a",
+        craterRim: "#2c1b0c",
+        rockLight: "#9a7048",
+        rockDark: "#402816",
+        root: "#634324",
+        topsoil: "#9c6a3b"
       };
     case "wurmfelsen":
       return {
@@ -373,12 +696,19 @@ function resolveTerrainTheme(mapId?: string): TerrainTheme {
         skyGlow: 0xffe9d3,
         hillNear: 0x6a7a94,
         hillFar: 0x9aa9c0,
+        hillMist: 0xc2cddd,
+        treeLine: 0x53627a,
         terrainBody: "#79553a",
         terrainMid: "#5c3f28",
         terrainDeep: "#33220f",
         grass: "#93d15e",
         grassHighlight: "#eefabf",
-        craterRim: "#2e1d0e"
+        grassShadow: "#54812f",
+        craterRim: "#2e1d0e",
+        rockLight: "#9d7852",
+        rockDark: "#3f2a17",
+        root: "#664726",
+        topsoil: "#9b6f45"
       };
     default:
       return {
@@ -387,18 +717,25 @@ function resolveTerrainTheme(mapId?: string): TerrainTheme {
         skyGlow: 0xfff0d1,
         hillNear: 0x738a98,
         hillFar: 0xa0b6c5,
+        hillMist: 0xc4d5e1,
+        treeLine: 0x586d7d,
         terrainBody: "#845833",
         terrainMid: "#684425",
         terrainDeep: "#3a2412",
         grass: "#87c959",
         grassHighlight: "#eaf9b8",
-        craterRim: "#31200f"
+        grassShadow: "#4d7c2c",
+        craterRim: "#31200f",
+        rockLight: "#a2784c",
+        rockDark: "#452c17",
+        root: "#684826",
+        topsoil: "#a26f3e"
       };
   }
 }
 
 function buildTerrainSignature(terrain: TerrainLike, textureKey: string): string {
-  return `${textureKey}:${terrain.mapId ?? "idle"}:${terrain.width}:${terrain.samples.length}:${terrain.craters.length}`;
+  return `${textureKey}:${terrain.mapId ?? "idle"}:${terrain.width}:${terrain.samples.length}:${terrain.craters.length}:${terrain.platforms.length}`;
 }
 
 /**
@@ -463,6 +800,37 @@ function traceTerrainOutline(
   }
 }
 
+/** Deterministisches Rauschen, damit die Map bei jedem Neuzeichnen gleich bleibt. */
+function terrainNoise(seed: number): number {
+  const value = Math.sin(seed * 12.9898) * 43_758.5453;
+  return value - Math.floor(value);
+}
+
+function tracePlatform(ctx: CanvasRenderingContext2D, platform: ChaosKommandoPlatformState): void {
+  ctx.moveTo(platform.x + platform.rx, platform.y);
+  ctx.ellipse(platform.x, platform.y, platform.rx, platform.ry, 0, 0, Math.PI * 2);
+}
+
+/** Gemeinsame Silhouette aus Hoehenkarte und schwebenden Inseln. */
+function traceTerrainMass(ctx: CanvasRenderingContext2D, terrain: TerrainLike): void {
+  ctx.beginPath();
+  ctx.moveTo(0, terrain.height);
+  ctx.lineTo(0, terrain.samples[0] ?? terrain.height);
+  traceTerrainOutline(ctx, terrain, 0);
+  ctx.lineTo(terrain.width, terrain.height);
+  ctx.closePath();
+
+  for (const platform of terrain.platforms) {
+    tracePlatform(ctx, platform);
+  }
+}
+
+/** Oberkante der Insel als eigener Grasstreifen. */
+function tracePlatformCap(ctx: CanvasRenderingContext2D, platform: ChaosKommandoPlatformState): void {
+  ctx.moveTo(platform.x - platform.rx, platform.y);
+  ctx.ellipse(platform.x, platform.y, platform.rx, platform.ry, 0, Math.PI, Math.PI * 2);
+}
+
 function paintTerrainCanvas(
   texture: Phaser.Textures.CanvasTexture,
   terrain: TerrainLike,
@@ -470,54 +838,111 @@ function paintTerrainCanvas(
 ): void {
   const ctx = texture.getContext();
   const { width, height } = terrain;
+  const surfaceAt = (x: number): number => {
+    const index = clamp(Math.round(x / terrain.sampleSpacing), 0, terrain.samples.length - 1);
+    return terrain.samples[index] ?? height;
+  };
 
   ctx.save();
   ctx.globalCompositeOperation = "source-over";
   ctx.clearRect(0, 0, width, height);
 
-  // Solid terrain body with layered soil gradient.
-  ctx.beginPath();
-  ctx.moveTo(0, height);
-  ctx.lineTo(0, terrain.samples[0] ?? height);
-  traceTerrainOutline(ctx, terrain, 0);
-  ctx.lineTo(width, height);
-  ctx.closePath();
-
-  const gradient = ctx.createLinearGradient(0, 380, 0, height);
+  // 1. Grundkoerper aus Hoehenkarte und Inseln.
+  traceTerrainMass(ctx, terrain);
+  const gradient = ctx.createLinearGradient(0, 300, 0, height);
   gradient.addColorStop(0, theme.terrainBody);
   gradient.addColorStop(0.45, theme.terrainMid);
   gradient.addColorStop(1, theme.terrainDeep);
   ctx.fillStyle = gradient;
   ctx.fill();
 
-  // Dirt speckles inside the terrain.
   ctx.save();
   ctx.clip();
-  for (let index = 0; index < terrain.samples.length; index += 9) {
-    const x = index * terrain.sampleSpacing;
-    const surfaceY = terrain.samples[index] ?? height;
-    const seed = (index * 2_654_435_761) >>> 0;
 
-    for (let layer = 0; layer < 3; layer += 1) {
-      const y = surfaceY + 28 + ((seed >>> (layer * 5)) % 200) + layer * 120;
+  // 2. Gesteinsschichten: leicht wellige Baender quer durch die Erde.
+  for (let band = 0; band < 7; band += 1) {
+    const baseY = 470 + band * 108 + terrainNoise(band * 7.3) * 40;
+    const amplitude = 12 + terrainNoise(band * 3.1) * 22;
+    const wavelength = 260 + terrainNoise(band * 5.7) * 420;
+    const thickness = 16 + terrainNoise(band * 9.4) * 30;
+
+    ctx.beginPath();
+    ctx.moveTo(0, baseY);
+    for (let x = 0; x <= width; x += 24) {
+      ctx.lineTo(x, baseY + Math.sin(x / wavelength + band) * amplitude);
+    }
+    for (let x = width; x >= 0; x -= 24) {
+      ctx.lineTo(x, baseY + thickness + Math.sin(x / wavelength + band) * amplitude);
+    }
+    ctx.closePath();
+    ctx.fillStyle = band % 2 === 0 ? theme.rockDark : theme.rockLight;
+    ctx.globalAlpha = band % 2 === 0 ? 0.18 : 0.12;
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+
+  // 3. Kiesel und Einschluesse.
+  for (let index = 0; index < terrain.samples.length; index += 5) {
+    const x = index * terrain.sampleSpacing;
+    const surfaceY = surfaceAt(x);
+
+    for (let layer = 0; layer < 4; layer += 1) {
+      const noise = terrainNoise(index * 0.37 + layer * 11.7);
+      const y = surfaceY + 34 + noise * 240 + layer * 150;
 
       if (y > height - 8) {
         continue;
       }
 
-      ctx.fillStyle = layer % 2 === 0 ? "rgba(0, 0, 0, 0.13)" : "rgba(255, 235, 200, 0.05)";
+      const radius = 1.8 + noise * 5.4;
       ctx.beginPath();
-      ctx.arc(x + ((seed >>> 3) % 26), y, 2.4 + ((seed >>> 7) % 4), 0, Math.PI * 2);
+      ctx.ellipse(
+        x + noise * 28,
+        y,
+        radius,
+        radius * (0.6 + noise * 0.5),
+        noise * Math.PI,
+        0,
+        Math.PI * 2
+      );
+      ctx.fillStyle = layer % 2 === 0 ? theme.rockDark : theme.rockLight;
+      ctx.globalAlpha = layer % 2 === 0 ? 0.3 : 0.2;
       ctx.fill();
     }
   }
+  ctx.globalAlpha = 1;
+
+  // 4. Duenne helle Krume direkt unter der Grasnarbe.
+  ctx.strokeStyle = theme.topsoil;
+  ctx.lineWidth = 16;
+  ctx.globalAlpha = 0.55;
+  ctx.beginPath();
+  traceTerrainOutline(ctx, terrain, 13);
+  ctx.stroke();
+  for (const platform of terrain.platforms) {
+    ctx.beginPath();
+    tracePlatformCap(ctx, { ...platform, ry: platform.ry - 12 });
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
   ctx.restore();
 
-  // Grass cap along the surface.
+  // 5. Grasnarbe mit Buescheln und Wurzeln.
+  ctx.save();
+  traceTerrainMass(ctx, terrain);
+  ctx.clip();
+  drawRoots(ctx, terrain, theme, surfaceAt);
+  ctx.restore();
+
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
+  ctx.strokeStyle = theme.grassShadow;
+  ctx.lineWidth = 14;
+  ctx.beginPath();
+  traceTerrainOutline(ctx, terrain, 4);
+  ctx.stroke();
   ctx.strokeStyle = theme.grass;
-  ctx.lineWidth = 9;
+  ctx.lineWidth = 10;
   ctx.beginPath();
   traceTerrainOutline(ctx, terrain, 0);
   ctx.stroke();
@@ -527,7 +952,22 @@ function paintTerrainCanvas(
   traceTerrainOutline(ctx, terrain, -3);
   ctx.stroke();
 
-  // Punch out every crater: this creates the tunnels and overhangs.
+  for (const platform of terrain.platforms) {
+    ctx.strokeStyle = theme.grass;
+    ctx.lineWidth = 10;
+    ctx.beginPath();
+    tracePlatformCap(ctx, platform);
+    ctx.stroke();
+    ctx.strokeStyle = theme.grassHighlight;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    tracePlatformCap(ctx, { ...platform, ry: platform.ry + 3 });
+    ctx.stroke();
+  }
+
+  drawGrassTufts(ctx, terrain, theme, surfaceAt);
+
+  // 6. Krater herausstanzen: das erzeugt Tunnel und Ueberhaenge.
   ctx.globalCompositeOperation = "destination-out";
   for (const crater of terrain.craters) {
     ctx.beginPath();
@@ -535,26 +975,104 @@ function paintTerrainCanvas(
     ctx.fill();
   }
 
-  // Scorched rims around the holes (only where terrain remains).
+  // 7. Verbrannte Raender, nur wo noch Terrain steht.
   ctx.globalCompositeOperation = "source-atop";
   for (const crater of terrain.craters) {
-    ctx.strokeStyle = theme.craterRim;
-    ctx.lineWidth = 7;
-    ctx.globalAlpha = 0.62;
+    const rim = ctx.createRadialGradient(
+      crater.x,
+      crater.y,
+      Math.max(1, crater.r * 0.72),
+      crater.x,
+      crater.y,
+      crater.r + 16
+    );
+    rim.addColorStop(0, theme.craterRim);
+    rim.addColorStop(0.55, "rgba(46, 28, 14, 0.42)");
+    rim.addColorStop(1, "rgba(46, 28, 14, 0)");
+    ctx.fillStyle = rim;
     ctx.beginPath();
-    ctx.arc(crater.x, crater.y, crater.r + 2, 0, Math.PI * 2);
-    ctx.stroke();
-    ctx.strokeStyle = "rgba(255, 205, 130, 0.16)";
+    ctx.arc(crater.x, crater.y, crater.r + 16, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.strokeStyle = "rgba(255, 205, 130, 0.2)";
     ctx.lineWidth = 3;
     ctx.beginPath();
-    ctx.arc(crater.x, crater.y, crater.r + 7, 0, Math.PI * 2);
+    ctx.arc(crater.x, crater.y, crater.r + 6, 0, Math.PI * 2);
     ctx.stroke();
-    ctx.globalAlpha = 1;
   }
 
   ctx.globalCompositeOperation = "source-over";
   ctx.restore();
   texture.refresh();
+}
+
+/** Wurzelfaeden, die aus der Grasnarbe in die Erde haengen. */
+function drawRoots(
+  ctx: CanvasRenderingContext2D,
+  terrain: TerrainLike,
+  theme: TerrainTheme,
+  surfaceAt: (x: number) => number
+): void {
+  ctx.strokeStyle = theme.root;
+  ctx.lineWidth = 2;
+  ctx.globalAlpha = 0.5;
+
+  for (let x = 0; x < terrain.width; x += 46) {
+    const noise = terrainNoise(x * 0.021);
+
+    if (noise < 0.45) {
+      continue;
+    }
+
+    const surfaceY = surfaceAt(x);
+    const length = 16 + noise * 34;
+    ctx.beginPath();
+    ctx.moveTo(x, surfaceY + 10);
+    ctx.quadraticCurveTo(
+      x + (noise - 0.5) * 26,
+      surfaceY + length * 0.6,
+      x + (noise - 0.5) * 14,
+      surfaceY + length
+    );
+    ctx.stroke();
+  }
+
+  ctx.globalAlpha = 1;
+}
+
+/** Kurze Grashalme auf der Kante, damit die Silhouette nicht wie ein Strich wirkt. */
+function drawGrassTufts(
+  ctx: CanvasRenderingContext2D,
+  terrain: TerrainLike,
+  theme: TerrainTheme,
+  surfaceAt: (x: number) => number
+): void {
+  ctx.strokeStyle = theme.grass;
+  ctx.lineWidth = 2.4;
+  ctx.lineCap = "round";
+
+  for (let x = 4; x < terrain.width; x += 17) {
+    const noise = terrainNoise(x * 0.043);
+
+    if (noise < 0.38) {
+      continue;
+    }
+
+    const surfaceY = surfaceAt(x);
+    const slope = surfaceAt(x + 12) - surfaceAt(x - 12);
+    // Auf Steilwaenden wachsen keine Halme.
+    if (Math.abs(slope) > 42) {
+      continue;
+    }
+
+    const height = 5 + noise * 9;
+    const lean = (noise - 0.5) * 8;
+    ctx.strokeStyle = noise > 0.72 ? theme.grassHighlight : theme.grass;
+    ctx.beginPath();
+    ctx.moveTo(x, surfaceY + 1);
+    ctx.quadraticCurveTo(x + lean * 0.4, surfaceY - height * 0.6, x + lean, surfaceY - height);
+    ctx.stroke();
+  }
 }
 
 function drawSky(
@@ -572,19 +1090,34 @@ function drawSky(
   graphics.fillStyle(theme.skyTop, 1);
   graphics.fillRect(0, 0, worldWidth, worldHeight);
 
-  graphics.fillStyle(theme.skyMid, 0.72);
-  graphics.fillRect(0, 0, worldWidth, waterlineY * 0.58);
-  graphics.fillStyle(theme.skyGlow, 0.3);
-  graphics.fillRect(0, 0, worldWidth, waterlineY * 0.28);
+  // Weicher Verlauf durch gestapelte, halbtransparente Baender.
+  for (let band = 0; band < 8; band += 1) {
+    const ratio = band / 7;
+    graphics.fillStyle(theme.skyMid, 0.1 + ratio * 0.12);
+    graphics.fillRect(0, waterlineY * ratio * 0.62, worldWidth, waterlineY * 0.62);
+  }
+  graphics.fillStyle(theme.skyGlow, 0.26);
+  graphics.fillRect(0, 0, worldWidth, waterlineY * 0.3);
 
-  graphics.fillStyle(theme.skyGlow, 0.28);
-  graphics.fillCircle(worldWidth * 0.78, 126, 96);
-  graphics.fillStyle(0xffffff, 0.16);
-  graphics.fillCircle(worldWidth * 0.78, 126, 144);
+  // Sonne mit gestaffeltem Halo.
+  const sunX = worldWidth * 0.78;
+  for (let ring = 4; ring >= 1; ring -= 1) {
+    graphics.fillStyle(theme.skyGlow, 0.07 * ring);
+    graphics.fillCircle(sunX, 126, 66 + ring * 34);
+  }
+  graphics.fillStyle(0xfffdf2, 0.9);
+  graphics.fillCircle(sunX, 126, 58);
 
+  // Drei Parallax-Ebenen: ferner Dunst, Berge, bewaldeter Ruecken.
+  drawHillBand(graphics, worldWidth, worldHeight, 330, 62, theme.hillMist, 0.55, 268, 0.00068);
   drawHillBand(graphics, worldWidth, worldHeight, 424, 86, theme.hillFar, 0.76, 188, 0.00092);
   drawHillBand(graphics, worldWidth, worldHeight, 540, 128, theme.hillNear, 0.84, 108, 0.00114);
+  drawTreeLine(graphics, worldWidth, theme);
   drawClouds(graphics, worldWidth, timeMs, windStrength, windDirection);
+
+  // Leichter Dunstschleier vor den Bergen, damit das Terrain vorne abhebt.
+  graphics.fillStyle(theme.hillMist, 0.16);
+  graphics.fillRect(0, 430, worldWidth, 240);
 }
 
 function drawHillBand(
@@ -613,6 +1146,30 @@ function drawHillBand(
   graphics.lineTo(worldWidth, worldHeight);
   graphics.closePath();
   graphics.fillPath();
+}
+
+/** Baumsilhouetten auf dem vorderen Huegelruecken. */
+function drawTreeLine(
+  graphics: Phaser.GameObjects.Graphics,
+  worldWidth: number,
+  theme: TerrainTheme
+): void {
+  graphics.fillStyle(theme.treeLine, 0.72);
+
+  for (let x = 20; x < worldWidth; x += 46) {
+    const noise = terrainNoise(x * 0.017);
+
+    if (noise < 0.4) {
+      continue;
+    }
+
+    const baseY =
+      540 + Math.sin(x / 108) * 128 + Math.cos(x * 0.00114) * 128 * 0.32;
+    const height = 34 + noise * 44;
+    const halfWidth = 9 + noise * 9;
+    graphics.fillTriangle(x, baseY - height, x - halfWidth, baseY + 6, x + halfWidth, baseY + 6);
+    graphics.fillRect(x - 2, baseY, 4, 10);
+  }
 }
 
 function drawClouds(
@@ -871,7 +1428,12 @@ function drawProjectile(
     return;
   }
 
-  if (projectile.weaponId === "luftschlag") {
+  if (
+    projectile.weaponId === "funk-bombenteppich" ||
+    projectile.weaponId === "leucht-salve" ||
+    projectile.weaponId === "signal-schauer" ||
+    projectile.weaponId === "pfeifen-sturzflug"
+  ) {
     graphics.fillStyle(0x64748b, 0.97);
     graphics.fillEllipse(projectile.x, projectile.y, projectile.radius * 1.6, projectile.radius * 2.4);
     graphics.fillStyle(0x334155, 0.95);
@@ -1061,6 +1623,50 @@ function drawRainbowTrail(
   }
 }
 
+/** Ninjaseil: leicht durchhaengendes Tau vom Soeldner zum Ankerpunkt. */
+function drawRope(graphics: Phaser.GameObjects.Graphics, state: ChaosKommandoState): void {
+  const rope = state.rope;
+
+  if (!rope) {
+    return;
+  }
+
+  const mercenary = state.players
+    .flatMap((player) => player.mercenaries)
+    .find((entry) => entry.id === rope.mercenaryId);
+
+  if (!mercenary || !mercenary.alive) {
+    return;
+  }
+
+  const handX = mercenary.x;
+  const handY = mercenary.y - mercenary.radius * 0.2;
+  const distance = Math.max(1, Math.hypot(handX - rope.anchorX, handY - rope.anchorY));
+  // Wie stark das Seil durchhaengt: straff bei voller Laenge, locker beim Klettern.
+  const slack = clamp((rope.length - distance) / Math.max(1, rope.length), 0, 1) * 26;
+  const segments = 14;
+
+  graphics.lineStyle(3, 0x3f2a17, 0.95);
+  graphics.beginPath();
+  graphics.moveTo(rope.anchorX, rope.anchorY);
+
+  for (let step = 1; step <= segments; step += 1) {
+    const t = step / segments;
+    const sag = Math.sin(t * Math.PI) * slack;
+    graphics.lineTo(
+      rope.anchorX + (handX - rope.anchorX) * t,
+      rope.anchorY + (handY - rope.anchorY) * t + sag
+    );
+  }
+
+  graphics.strokePath();
+
+  graphics.fillStyle(0xd9b382, 1);
+  graphics.fillCircle(rope.anchorX, rope.anchorY, 5);
+  graphics.lineStyle(2, 0x3f2a17, 0.95);
+  graphics.strokeCircle(rope.anchorX, rope.anchorY, 5);
+}
+
 function drawActors(
   graphics: Phaser.GameObjects.Graphics,
   state: ChaosKommandoState,
@@ -1068,6 +1674,8 @@ function drawActors(
 ): void {
   graphics.clear();
   const selection = resolveSelection(state);
+
+  drawRope(graphics, state);
 
   for (const gravestone of state.gravestones) {
     drawGravestone(graphics, gravestone);

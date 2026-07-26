@@ -14,9 +14,15 @@ export type ChaosKommandoWeaponId =
   | "dynamit"
   | "heilige-granate"
   | "banane"
-  | "luftschlag"
   | "baseball-schlaeger"
-  | "minigun";
+  | "minigun"
+  /** Vier eigenstaendige Luftschlaege mit unterschiedlichem Trefferbild. */
+  | "funk-bombenteppich"
+  | "leucht-salve"
+  | "signal-schauer"
+  | "pfeifen-sturzflug"
+  /** Werkzeug statt Waffe: Ninjaseil zum Schwingen und Klettern. */
+  | "seilzug";
 
 export type ChaosKommandoMercenaryRole =
   | "sprinter"
@@ -163,6 +169,11 @@ export interface ChaosKommandoTurnState {
   activeMercenaryId: string;
   currentWeaponId: ChaosKommandoWeaponId;
   turnEndsAt: number;
+  /**
+   * Bis dahin faehrt die Kamera zum neuen Soeldner: die Zuguhr steht, und
+   * Bewegen, Springen und Feuern sind gesperrt.
+   */
+  prepEndsAt: number;
   hasFired: boolean;
   resolvingShot: boolean;
   chargeStartedAt: number | null;
@@ -182,6 +193,19 @@ export interface ChaosKommandoCraterState {
   r: number;
 }
 
+/**
+ * Solid mass added above the heightmap: floating islands and rock spurs.
+ * Craters are subtracted from platforms too, so they stay destructible.
+ */
+export interface ChaosKommandoPlatformState {
+  x: number;
+  y: number;
+  /** Horizontal radius. */
+  rx: number;
+  /** Vertical radius. */
+  ry: number;
+}
+
 export interface ChaosKommandoTerrainState {
   mapId: string;
   mapName: string;
@@ -191,6 +215,7 @@ export interface ChaosKommandoTerrainState {
   sampleSpacing: number;
   samples: number[];
   craters: ChaosKommandoCraterState[];
+  platforms: ChaosKommandoPlatformState[];
 }
 
 export interface ChaosKommandoMineState {
@@ -217,6 +242,18 @@ export interface ChaosKommandoCrateState {
   amount: number;
 }
 
+/**
+ * Aktives Ninjaseil. Nur der Soeldner am Zug kann eines haben.
+ * Der Anker haengt am Terrain und loest sich, wenn dort ein Krater entsteht.
+ */
+export interface ChaosKommandoRopeState {
+  mercenaryId: string;
+  anchorX: number;
+  anchorY: number;
+  /** Aktuelle Seillaenge in Pixeln. */
+  length: number;
+}
+
 export interface ChaosKommandoWindState {
   strength: number;
   direction: -1 | 1;
@@ -233,6 +270,7 @@ export interface ChaosKommandoState {
   gravestones: ChaosKommandoGravestoneState[];
   mines: ChaosKommandoMineState[];
   crates: ChaosKommandoCrateState[];
+  rope: ChaosKommandoRopeState | null;
   wind: ChaosKommandoWindState;
   /** True once the rising-water sudden death has started. */
   suddenDeath: boolean;

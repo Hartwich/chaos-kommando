@@ -212,7 +212,10 @@ export class ChaosKommandoAudioRig {
         this.playTone("triangle", 540, 760, 0.16, 0.07);
         this.playNoiseBurst(0.04, 0.03, 4_400, 1_800);
         break;
-      case "luftschlag":
+      case "funk-bombenteppich":
+      case "leucht-salve":
+      case "signal-schauer":
+      case "pfeifen-sturzflug":
         this.playTone("sawtooth", 240, 120, 0.4, 0.06);
         this.playNoiseBurst(0.24, 0.08, 1_400, 400);
         break;
@@ -288,7 +291,10 @@ export class ChaosKommandoAudioRig {
         this.playNoiseBurst(0.34, 0.18, 1_300, 200);
         this.playTone("triangle", 220, 70, 0.24, 0.08);
         break;
-      case "luftschlag":
+      case "funk-bombenteppich":
+      case "leucht-salve":
+      case "signal-schauer":
+      case "pfeifen-sturzflug":
         this.playNoiseBurst(0.4, 0.22, 1_000, 140);
         this.playTone("sawtooth", 120, 40, 0.3, 0.1);
         break;

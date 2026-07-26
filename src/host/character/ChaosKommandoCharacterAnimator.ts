@@ -236,7 +236,17 @@ export function resolveChaosKommandoCharacterPose({
   const displayedVisual = displayedWeaponId ? chaosKommandoWeaponVisuals[displayedWeaponId] : null;
 
   const aim = resolveAim(mercenary, state, isActive, groundY, scale, profile);
-  const actionHand: MarshmallowActionHand = aim.ux >= 0 ? "right" : "left";
+  // Geschossen wird mit der Hand auf der Zielseite, geworfen mit der abgewandten:
+  // die Wurfhand holt entgegen dem Zielvektor aus und braucht dort Platz.
+  const aimsRight = aim.ux >= 0;
+  const throwPosture = (displayedVisual?.posture ?? null) === "throw";
+  const actionHand: MarshmallowActionHand = throwPosture
+    ? aimsRight
+      ? "left"
+      : "right"
+    : aimsRight
+      ? "right"
+      : "left";
 
   const motionState = resolveMotionState({
     mercenary,

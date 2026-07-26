@@ -4,6 +4,7 @@ import { ChaosKommandoAudioRig } from "./ChaosKommandoAudio.js";
 import { preloadChaosKommandoCharacterAssets } from "./character/ChaosKommandoCharacterAssets.js";
 import {
   createChaosKommandoRenderState,
+  resolveChaosKommandoBanner,
   destroyChaosKommandoRenderState,
   renderChaosKommandoFrame,
   renderChaosKommandoIdleFrame,
@@ -33,6 +34,7 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
   private audioRig = new ChaosKommandoAudioRig();
   private headerText?: Phaser.GameObjects.Text;
   private infoText?: Phaser.GameObjects.Text;
+  private bannerText?: Phaser.GameObjects.Text;
 
   constructor() {
     super("ChaosKommandoHostScene");
@@ -50,21 +52,39 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
     this.headerText = this.add
       .text(34, 24, "", {
         fontFamily: hostTheme.titleFont,
-        fontSize: "34px",
-        color: "#f8fafc"
+        fontSize: "40px",
+        color: "#f8fafc",
+        stroke: "#0f172a",
+        strokeThickness: 5
       })
       .setDepth(40)
       .setScrollFactor(0);
     this.infoText = this.add
-      .text(34, 72, "", {
-        fontFamily: hostTheme.bodyFont,
-        fontSize: "19px",
-        color: "#dbeafe",
+      .text(34, 78, "", {
+        fontFamily: hostTheme.titleFont,
+        fontSize: "44px",
+        color: "#fde68a",
+        stroke: "#0f172a",
+        strokeThickness: 5,
         wordWrap: { width: Math.max(320, this.scale.width - 68) },
         lineSpacing: 5
       })
       .setDepth(40)
       .setScrollFactor(0);
+
+    this.bannerText = this.add
+      .text(this.scale.width / 2, this.scale.height * 0.34, "", {
+        fontFamily: hostTheme.titleFont,
+        fontSize: "58px",
+        color: "#f8fafc",
+        stroke: "#0f172a",
+        strokeThickness: 8,
+        align: "center"
+      })
+      .setOrigin(0.5)
+      .setDepth(60)
+      .setScrollFactor(0)
+      .setVisible(false);
 
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
 
@@ -93,6 +113,8 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
       this.headerText = undefined;
       this.infoText?.destroy();
       this.infoText = undefined;
+      this.bannerText?.destroy();
+      this.bannerText = undefined;
     });
   }
 
@@ -104,12 +126,32 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
     if (this.latestGameState) {
       renderChaosKommandoFrame(this, this.renderState, this.latestGameState, time);
       this.audioRig.updateChargeLoop(this.latestGameState);
+      this.syncBanner(time);
     } else {
       renderChaosKommandoIdleFrame(this, this.renderState, time);
       this.audioRig.updateChargeLoop(null);
     }
 
     this.syncOverlay();
+  }
+
+  /** Namensbanner der Kameraregie mit kurzem Ein- und Ausblenden. */
+  private syncBanner(timeMs: number): void {
+    if (!this.bannerText || !this.renderState) {
+      return;
+    }
+
+    const text = resolveChaosKommandoBanner(this.renderState, timeMs);
+
+    if (!text) {
+      this.bannerText.setVisible(false);
+      return;
+    }
+
+    this.bannerText
+      .setVisible(true)
+      .setText(text)
+      .setPosition(this.scale.width / 2, this.scale.height * 0.34);
   }
 
   private handleResize(): void {
@@ -134,14 +176,24 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
     }
 
     const currentPlayer = gameState.players.find((player) => player.playerId === gameState.turn.currentPlayerId);
-    const turnSeconds = Math.max(0, Math.ceil((gameState.turn.turnEndsAt - Date.now()) / 1000));
+    const activeMercenary = currentPlayer?.mercenaries.find(
+      (mercenary) => mercenary.id === gameState.turn.activeMercenaryId
+    );
+    const nowMs = Date.now();
+    // Waehrend der Kamerafahrt steht die Uhr; sie startet erst mit dem Zug.
+    const preparing = nowMs < gameState.turn.prepEndsAt;
+    const turnSeconds = Math.max(0, Math.ceil((gameState.turn.turnEndsAt - nowMs) / 1000));
     const headline = gameState.winnerName
       ? gameState.winnerName
       : currentPlayer
-        ? currentPlayer.name
+        ? activeMercenary
+          ? `${currentPlayer.name} · ${activeMercenary.name}`
+          : currentPlayer.name
         : "Chaos-Kommando";
 
     this.headerText.setText(headline);
-    this.infoText.setText(`${turnSeconds}s`);
+    this.infoText.setText(
+      gameState.winnerName ? "" : preparing ? "Bereitmachen ..." : `${turnSeconds}s`
+    );
   }
 }

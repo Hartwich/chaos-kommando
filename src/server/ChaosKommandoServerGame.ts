@@ -18,8 +18,10 @@ import type {
   ChaosKommandoMercenaryRole,
   ChaosKommandoMercenaryState,
   ChaosKommandoMineState,
+  ChaosKommandoPlatformState,
   ChaosKommandoPlayerState,
   ChaosKommandoProjectileState,
+  ChaosKommandoRopeState,
   ChaosKommandoState,
   ChaosKommandoTerrainState,
   ChaosKommandoTurnState,
@@ -38,16 +40,29 @@ const sampleSpacing = 4;
 const mercenaryRadius = 20;
 const walkSpeed = 82;
 const gravity = 880;
-const jumpVelocity = -330;
+// Sprunghoehe skaliert mit v^2, fuer +25% Hoehe also v * sqrt(1.25).
+const jumpVelocity = -369;
 const jumpForwardBoost = 92;
 const turnDurationMs = 30_000;
+/**
+ * Vorlauf am Zuganfang. Deckt Namensbanner und Kamerafahrt zum neuen Soeldner
+ * ab; erst danach laeuft die Uhr und die Figur reagiert.
+ */
+const turnPrepMs = 2_000;
 const retreatDurationMs = 3_000;
 const chargeWindowMs = 1_750;
-const settleDelayMs = 900;
+const settleDelayMs = 1_400;
+/**
+ * Zusaetzliche Ruhezeit nach dem letzten Todesfall eines Zuges. Deckt die
+ * Kamerafahrt ab: Uebersicht, Blick auf den Gefallenen, Jubelanimation.
+ */
+const celebrationDelayMs = 3_400;
 const jumpCooldownMs = 650;
 const crosshairDistance = 150;
-const stepUpHeight = 14;
-const stepDownHeight = 20;
+// Steigfaehigkeit bewusst 20% ueber dem alten Wert: Steilkanten und
+// Kraterraender bleiben ohne Sprung oder Seil ueberwindbar.
+const stepUpHeight = 17;
+const stepDownHeight = 24;
 const deathExplosionRadius = 88;
 const deathExplosionDamage = 24;
 const deathExplosionCraterDepth = 30;
@@ -56,6 +71,22 @@ const gravestoneSpawnDelayMs = 280;
 const gravestoneRadius = 18;
 const mineRadius = 11;
 const mineTriggerDistance = 40;
+
+/* --- Ninjaseil ------------------------------------------------------- */
+/** Maximale Wurfweite des Hakens. */
+const ropeMaxCastLength = 460;
+/** Kuerzeste Seillaenge; darunter klebt man am Anker. */
+const ropeMinLength = 34;
+/** Seitliche Beschleunigung durch den Stick beim Schwingen. */
+const ropeSwingAcceleration = 640;
+/** Ein- und Ausrollgeschwindigkeit ueber den Stick. */
+const ropeReelSpeed = 190;
+/** Daempfung der Radialbewegung beim Straffen. Voll elastisch waere unspielbar. */
+const ropeRadialDamping = 0.35;
+/** Schrittweite des Hakenstrahls. */
+const ropeCastStep = 5;
+/** Sicherheitsabstand jeder Mine zu jedem Soeldner-Startpunkt. */
+const minMineSpawnDistance = 150;
 const mineFuseMs = 1_300;
 const mineDamage = 38;
 const mineBlastRadius = 82;
@@ -64,8 +95,20 @@ const crateDropEveryNTurns = 3;
 const suddenDeathTurn = 16;
 const suddenDeathWaterRisePerTurn = 26;
 
+/** Eine Salve: gleiche Waffe, gleicher Schuetze, ein Projektil pro Intervall. */
+interface RuntimeBurstState {
+  weaponId: ChaosKommandoWeaponId;
+  mercenaryId: string;
+  remaining: number;
+  nextAtMs: number;
+  intervalMs: number;
+  index: number;
+}
+
 type RuntimeMercenaryState = ChaosKommandoMercenaryState & {
   moveInputX: number;
+  /** Vertikale Stickachse; am Seil steuert sie die Seillaenge. */
+  moveInputY: number;
   jumpReadyAt: number;
   airborneFromY: number | null;
   deathExploded: boolean;
@@ -93,6 +136,8 @@ type RuntimeProjectileState = ChaosKommandoProjectileState & {
 
 interface RuntimeTurnState extends ChaosKommandoTurnState {
   orderPlayerIds: string[];
+  /** Zuletzt eingesetzter Soeldner je Team, Grundlage der Rotation. */
+  lastMercenaryIdByPlayer: Record<string, string>;
 }
 
 interface RuntimeDeathSequenceState {
@@ -113,6 +158,9 @@ interface ChaosKommandoRuntimeState
   gravestones: RuntimeGravestoneState[];
   mines: RuntimeMineState[];
   crates: RuntimeCrateState[];
+  rope: ChaosKommandoRopeState | null;
+  /** Laufende Schussfolge, z.B. Minigun. Ein Schuss pro Intervall. */
+  burst: RuntimeBurstState | null;
   turn: RuntimeTurnState;
   seed: number;
   language: SupportedLanguage;
@@ -124,222 +172,222 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
   {
     id: "kicher-bazooka",
     displayName: "Kicher-Bazooka",
-    description: "Der Klassiker. Fliegt im Bogen, der Wind mischt kraeftig mit.",
-    iconPath: "/chaos-kommando/weapons/kicher-bazooka.svg",
+    description: "Der Klassiker. Fliegt weit, der Wind mischt kraeftig mit.",
+    iconPath: "/chaos-kommando/weapons/arsenal/rocket-launcher.png",
     accentColor: "#ff935c",
     fireMode: "charged",
-    damage: 45,
-    blastRadius: 90,
-    projectileSpeed: 760,
-    gravityScale: 0.74,
+    damage: 42,
+    blastRadius: 96,
+    projectileSpeed: 900,
+    gravityScale: 0.7,
     windScale: 1,
     fuseMs: null,
-    craterDepth: 56
-  },
-  {
-    id: "enten-granate",
-    displayName: "Enten-Granate",
-    description: "Huepft, wartet drei Sekunden und reisst dann ein tiefes Loch.",
-    iconPath: "/chaos-kommando/weapons/enten-granate.svg",
-    accentColor: "#ffd24d",
-    fireMode: "charged",
-    damage: 48,
-    blastRadius: 100,
-    projectileSpeed: 600,
-    gravityScale: 1.1,
-    windScale: 0,
-    fuseMs: 3_000,
-    craterDepth: 66
-  },
-  {
-    id: "plunder-pistole",
-    displayName: "Plunder-Pistole",
-    description: "Schneller Direktschuss ohne Bogen. Ideal zum Nachsetzen.",
-    iconPath: "/chaos-kommando/weapons/plunder-pistole.svg",
-    accentColor: "#7dd3fc",
-    fireMode: "instant",
-    damage: 24,
-    blastRadius: 32,
-    projectileSpeed: 1_050,
-    gravityScale: 0.06,
-    windScale: 0,
-    fuseMs: null,
-    craterDepth: 12
+    craterDepth: 58
   },
   {
     id: "regenbogen-rakete",
     displayName: "Regenbogen-Rakete",
-    description: "Riesiger bunter Bumms, aber nur einmal pro Soeldner.",
-    iconPath: "/chaos-kommando/weapons/regenbogen-rakete.svg",
+    description: "Flache Bahn, kaum Wind. Trifft auch auf grosse Distanz.",
+    iconPath: "/chaos-kommando/weapons/arsenal/marshmallow-blaster.png",
     accentColor: "#f472b6",
     fireMode: "charged",
-    damage: 72,
-    blastRadius: 140,
-    projectileSpeed: 800,
-    gravityScale: 0.6,
-    windScale: 1.15,
-    fuseMs: null,
-    craterDepth: 82
-  },
-  {
-    id: "splitter-granate",
-    displayName: "Splitter-Granate",
-    description: "Huepft kurz und streut beim Knall fiese Splitter.",
-    iconPath: "/chaos-kommando/weapons/splitter-granate.svg",
-    accentColor: "#fb923c",
-    fireMode: "charged",
-    damage: 30,
-    blastRadius: 80,
-    projectileSpeed: 580,
-    gravityScale: 1.08,
-    windScale: 0,
-    fuseMs: 2_600,
-    craterDepth: 44
-  },
-  {
-    id: "konfetti-schrot",
-    displayName: "Konfetti-Schrot",
-    description: "Direkter Faecher aus funkelnden Nahkampf-Pellets.",
-    iconPath: "/chaos-kommando/weapons/konfetti-schrot.svg",
-    accentColor: "#f0abfc",
-    fireMode: "instant",
-    damage: 13,
-    blastRadius: 26,
-    projectileSpeed: 1_000,
-    gravityScale: 0.14,
-    windScale: 0,
-    fuseMs: null,
-    craterDepth: 8
-  },
-  {
-    id: "bohrer-rakete",
-    displayName: "Bohrer-Rakete",
-    description: "Frisst sich tief ins Gelaende und gruebt steile Tunnel.",
-    iconPath: "/chaos-kommando/weapons/bohrer-rakete.svg",
-    accentColor: "#a3e635",
-    fireMode: "charged",
-    damage: 30,
-    blastRadius: 74,
-    projectileSpeed: 740,
-    gravityScale: 0.66,
-    windScale: 0.4,
-    fuseMs: null,
-    craterDepth: 96
-  },
-  {
-    id: "gummi-huhn",
-    displayName: "Gummi-Huhn",
-    description: "Springt albern durch die Gegend und knallt erst nach der Lunte.",
-    iconPath: "/chaos-kommando/weapons/gummi-huhn.svg",
-    accentColor: "#fde047",
-    fireMode: "charged",
-    damage: 32,
-    blastRadius: 84,
-    projectileSpeed: 620,
-    gravityScale: 0.95,
-    windScale: 0,
-    fuseMs: 2_800,
-    craterDepth: 34
-  },
-  {
-    id: "seifenblasen-bombe",
-    displayName: "Seifenblasen-Bombe",
-    description: "Schwebt mit dem Wind davon und pustet Soeldner von Haengen.",
-    iconPath: "/chaos-kommando/weapons/seifenblasen-bombe.svg",
-    accentColor: "#67e8f9",
-    fireMode: "charged",
-    damage: 24,
-    blastRadius: 118,
-    projectileSpeed: 520,
-    gravityScale: 0.3,
-    windScale: 1.8,
-    fuseMs: 2_200,
-    craterDepth: 22
-  },
-  {
-    id: "keks-moerser",
-    displayName: "Keks-Moerser",
-    description: "Schwerer Bogenwurf mit knusprigem Einschlag von oben.",
-    iconPath: "/chaos-kommando/weapons/keks-moerser.svg",
-    accentColor: "#d97706",
-    fireMode: "charged",
-    damage: 42,
-    blastRadius: 100,
-    projectileSpeed: 500,
-    gravityScale: 1.24,
-    windScale: 0.3,
+    damage: 46,
+    blastRadius: 104,
+    projectileSpeed: 960,
+    gravityScale: 0.52,
+    windScale: 0.6,
     fuseMs: null,
     craterDepth: 62
   },
   {
-    id: "dynamit",
-    displayName: "Dynamit",
-    description: "Ablegen, wegrennen, Ohren zuhalten. Riesiges Loch garantiert.",
-    iconPath: "/chaos-kommando/weapons/dynamit.svg",
-    accentColor: "#ef4444",
-    fireMode: "instant",
-    damage: 70,
-    blastRadius: 125,
-    projectileSpeed: 0,
-    gravityScale: 1,
-    windScale: 0,
-    fuseMs: 3_800,
-    craterDepth: 84
+    id: "bohrer-rakete",
+    displayName: "Bohrer-Rakete",
+    description: "Frisst sich tief ins Terrain. Schmaler Wirkradius, tiefes Loch.",
+    iconPath: "/chaos-kommando/weapons/arsenal/grenade-launcher.png",
+    accentColor: "#f59e0b",
+    fireMode: "charged",
+    damage: 44,
+    blastRadius: 88,
+    projectileSpeed: 940,
+    gravityScale: 0.6,
+    windScale: 0.5,
+    fuseMs: null,
+    craterDepth: 72
   },
   {
-    id: "heilige-granate",
-    displayName: "Heilige Granate",
-    description: "Halleluja. Der groesste Knall im ganzen Arsenal.",
-    iconPath: "/chaos-kommando/weapons/heilige-granate.svg",
-    accentColor: "#facc15",
+    id: "konfetti-schrot",
+    displayName: "Konfetti-Schrot",
+    description: "Breite Streuung auf kurze Distanz. Wenig Schaden, viel Flaeche.",
+    iconPath: "/chaos-kommando/weapons/arsenal/confetti-cannon.png",
+    accentColor: "#22d3ee",
     fireMode: "charged",
-    damage: 95,
-    blastRadius: 165,
-    projectileSpeed: 560,
-    gravityScale: 1.05,
-    windScale: 0,
-    fuseMs: 3_400,
-    craterDepth: 96
-  },
-  {
-    id: "banane",
-    displayName: "Banana-Bombe",
-    description: "Platzt beim Aufprall in fuenf huepfende Mini-Bananen.",
-    iconPath: "/chaos-kommando/weapons/banane.svg",
-    accentColor: "#fde047",
-    fireMode: "charged",
-    damage: 38,
-    blastRadius: 84,
-    projectileSpeed: 620,
-    gravityScale: 1.05,
-    windScale: 0,
+    damage: 30,
+    blastRadius: 118,
+    projectileSpeed: 880,
+    gravityScale: 0.62,
+    windScale: 0.4,
     fuseMs: null,
     craterDepth: 46
   },
   {
-    id: "luftschlag",
-    displayName: "Luftschlag",
-    description: "Vier Bomben aus heiterem Himmel auf die Zielrichtung.",
-    iconPath: "/chaos-kommando/weapons/luftschlag.svg",
-    accentColor: "#94a3b8",
+    id: "keks-moerser",
+    displayName: "Keks-Moerser",
+    description: "Steiler Bogen ueber Deckung hinweg.",
+    iconPath: "/chaos-kommando/weapons/arsenal/plunger-launcher.png",
+    accentColor: "#a3e635",
+    fireMode: "charged",
+    damage: 38,
+    blastRadius: 108,
+    projectileSpeed: 820,
+    gravityScale: 1.05,
+    windScale: 0.3,
+    fuseMs: null,
+    craterDepth: 56
+  },
+  {
+    id: "minigun",
+    displayName: "Konfetti-Minigun",
+    description: "Sechs Schuss in schneller Folge. Einzeln schwach, in Summe boese.",
+    iconPath: "/chaos-kommando/weapons/arsenal/minigun.png",
+    accentColor: "#38bdf8",
+    fireMode: "charged",
+    damage: 13,
+    blastRadius: 46,
+    projectileSpeed: 980,
+    gravityScale: 0.3,
+    windScale: 0.35,
+    fuseMs: null,
+    craterDepth: 16
+  },
+  {
+    id: "plunder-pistole",
+    displayName: "Pluender-Pistole",
+    description: "Sofortschuss ohne Aufladen. Praezise, wenig Wumms.",
+    iconPath: "/chaos-kommando/weapons/arsenal/revolver.png",
+    accentColor: "#fbbf24",
     fireMode: "instant",
+    damage: 26,
+    blastRadius: 44,
+    projectileSpeed: 1040,
+    gravityScale: 0.16,
+    windScale: 0.3,
+    fuseMs: null,
+    craterDepth: 14
+  },
+  {
+    id: "splitter-granate",
+    displayName: "Splitter-Granate",
+    description: "Zuverlaessige Standardgranate mit kurzer Zuendschnur.",
+    iconPath: "/chaos-kommando/weapons/arsenal/frag-grenade.png",
+    accentColor: "#facc15",
+    fireMode: "charged",
+    damage: 34,
+    blastRadius: 92,
+    projectileSpeed: 840,
+    gravityScale: 1.0,
+    windScale: 0,
+    fuseMs: 2_600,
+    craterDepth: 46
+  },
+  {
+    id: "enten-granate",
+    displayName: "Enten-Granate",
+    description: "Quakt, huepft und macht dann ordentlich Rabatz.",
+    iconPath: "/chaos-kommando/weapons/arsenal/duck-grenade.png",
+    accentColor: "#fde047",
+    fireMode: "charged",
+    damage: 36,
+    blastRadius: 98,
+    projectileSpeed: 840,
+    gravityScale: 1.0,
+    windScale: 0,
+    fuseMs: 3_000,
+    craterDepth: 50
+  },
+  {
+    id: "heilige-granate",
+    displayName: "Heilige Granate",
+    description: "Halleluja. Groesster Wirkradius im ganzen Arsenal.",
+    iconPath: "/chaos-kommando/weapons/arsenal/cluster-grenade.png",
+    accentColor: "#fef3c7",
+    fireMode: "charged",
+    damage: 52,
+    blastRadius: 170,
+    projectileSpeed: 820,
+    gravityScale: 1.0,
+    windScale: 0,
+    fuseMs: 3_400,
+    craterDepth: 78
+  },
+  {
+    id: "banane",
+    displayName: "Bananen-Bombe",
+    description: "Platzt beim Aufschlag in fuenf huepfende Mini-Bananen.",
+    iconPath: "/chaos-kommando/weapons/arsenal/banana-bomb.png",
+    accentColor: "#fde68a",
+    fireMode: "charged",
     damage: 32,
-    blastRadius: 72,
-    projectileSpeed: 0,
-    gravityScale: 0.78,
+    blastRadius: 86,
+    projectileSpeed: 860,
+    gravityScale: 0.98,
     windScale: 0,
     fuseMs: null,
     craterDepth: 44
+  },
+  {
+    id: "gummi-huhn",
+    displayName: "Gummi-Huhn",
+    description: "Springt weit und unberechenbar. Wind ignoriert es.",
+    iconPath: "/chaos-kommando/weapons/arsenal/sticky-grenade.png",
+    accentColor: "#fb7185",
+    fireMode: "charged",
+    damage: 30,
+    blastRadius: 92,
+    projectileSpeed: 860,
+    gravityScale: 0.92,
+    windScale: 0,
+    fuseMs: 2_800,
+    craterDepth: 38
+  },
+  {
+    id: "seifenblasen-bombe",
+    displayName: "Seifenblasen-Bombe",
+    description: "Treibt im Wind, riesige Wolke, wenig Schaden pro Treffer.",
+    iconPath: "/chaos-kommando/weapons/arsenal/smoke-grenade.png",
+    accentColor: "#67e8f9",
+    fireMode: "charged",
+    damage: 28,
+    blastRadius: 150,
+    projectileSpeed: 800,
+    gravityScale: 0.34,
+    windScale: 1.6,
+    fuseMs: 2_200,
+    craterDepth: 30
+  },
+  {
+    id: "dynamit",
+    displayName: "Dynamit",
+    description: "Wird abgelegt und zuendet nach vier Sekunden.",
+    iconPath: "/chaos-kommando/weapons/arsenal/dynamite-bundle.png",
+    accentColor: "#ef4444",
+    fireMode: "instant",
+    damage: 46,
+    blastRadius: 132,
+    projectileSpeed: 0,
+    gravityScale: 1,
+    windScale: 0,
+    fuseMs: 3_800,
+    craterDepth: 74
   },
   {
     id: "baseball-schlaeger",
     displayName: "Baseball-Schlaeger",
     description: "Kein Loch, aber ein Traumflug fuer den Getroffenen.",
-    iconPath: "/chaos-kommando/weapons/baseball-schlaeger.svg",
+    iconPath: "/chaos-kommando/weapons/arsenal/baseball-bat.png",
     accentColor: "#fbbf24",
     fireMode: "instant",
-    damage: 28,
-    blastRadius: 52,
+    damage: 30,
+    blastRadius: 58,
     projectileSpeed: 0,
     gravityScale: 1,
     windScale: 0,
@@ -347,93 +395,106 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     craterDepth: 0
   },
   {
-    id: "minigun",
-    displayName: "Konfetti-Minigun",
-    description: "Zehn Kugeln Dauerfeuer, das sich durch Huegel nagt.",
-    iconPath: "/chaos-kommando/weapons/minigun.svg",
-    accentColor: "#f87171",
+    id: "funk-bombenteppich",
+    displayName: "Funk-Bombenteppich",
+    description: "Fuenf Bomben in einer Linie ueber dem Ziel.",
+    iconPath: "/chaos-kommando/weapons/arsenal/airstrike-radio.png",
+    accentColor: "#94a3b8",
     fireMode: "instant",
-    damage: 8,
-    blastRadius: 22,
-    projectileSpeed: 1_150,
-    gravityScale: 0.1,
+    damage: 30,
+    blastRadius: 84,
+    projectileSpeed: 0,
+    gravityScale: 0.9,
     windScale: 0,
     fuseMs: null,
-    craterDepth: 10
+    craterDepth: 48
+  },
+  {
+    id: "leucht-salve",
+    displayName: "Leucht-Salve",
+    description: "Enge Salve kleiner Brandbomben auf einen Punkt.",
+    iconPath: "/chaos-kommando/weapons/arsenal/airstrike-flare-gun.png",
+    accentColor: "#fb923c",
+    fireMode: "instant",
+    damage: 24,
+    blastRadius: 62,
+    projectileSpeed: 0,
+    gravityScale: 0.9,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 32
+  },
+  {
+    id: "signal-schauer",
+    displayName: "Signal-Schauer",
+    description: "Weit gestreuter Schauer. Trifft viel, verletzt wenig.",
+    iconPath: "/chaos-kommando/weapons/arsenal/airstrike-signal-flare.png",
+    accentColor: "#f87171",
+    fireMode: "instant",
+    damage: 20,
+    blastRadius: 96,
+    projectileSpeed: 0,
+    gravityScale: 0.95,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 34
+  },
+  {
+    id: "pfeifen-sturzflug",
+    displayName: "Pfeifen-Sturzflug",
+    description: "Eine schwere Bombe senkrecht von oben.",
+    iconPath: "/chaos-kommando/weapons/arsenal/airstrike-whistle.png",
+    accentColor: "#cbd5e1",
+    fireMode: "instant",
+    damage: 50,
+    blastRadius: 110,
+    projectileSpeed: 0,
+    gravityScale: 1.1,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 76
+  },
+  {
+    id: "seilzug",
+    displayName: "Seilzug",
+    description: "Werkzeug statt Waffe. Seil schiessen, schwingen, klettern.",
+    iconPath: "/chaos-kommando/weapons/arsenal/proximity-mine.png",
+    accentColor: "#a5b4fc",
+    fireMode: "instant",
+    damage: 0,
+    blastRadius: 0,
+    projectileSpeed: 0,
+    gravityScale: 0,
+    windScale: 0,
+    fuseMs: null,
+    craterDepth: 0
   }
 ];
 
 const weaponTexts: Partial<
-  Record<
-    SupportedLanguage,
-    Partial<Record<ChaosKommandoWeaponId, Pick<ChaosKommandoWeaponDefinition, "displayName" | "description">>>
-  >
+  Record<SupportedLanguage, Partial<Record<ChaosKommandoWeaponId, { displayName: string; description: string }>>>
 > = {
   en: {
-    "kicher-bazooka": {
-      displayName: "Giggler Bazooka",
-      description: "The classic. Arcs through the air, the wind joins in."
-    },
-    "enten-granate": {
-      displayName: "Duck Grenade",
-      description: "Bounces, waits three seconds, then tears open a deep hole."
-    },
-    "plunder-pistole": {
-      displayName: "Plunder Pistol",
-      description: "Fast straight shot with no arc. Great for finishing off."
-    },
-    "regenbogen-rakete": {
-      displayName: "Rainbow Rocket",
-      description: "A huge colorful blast, but only once per mercenary."
-    },
-    "splitter-granate": {
-      displayName: "Shrapnel Grenade",
-      description: "Bounces briefly and scatters nasty fragments on the bang."
-    },
-    "konfetti-schrot": {
-      displayName: "Confetti Shotgun",
-      description: "A direct fan of sparkling close-range pellets."
-    },
-    "bohrer-rakete": {
-      displayName: "Drill Rocket",
-      description: "Bites deep into the terrain and digs steep tunnels."
-    },
-    "gummi-huhn": {
-      displayName: "Rubber Chicken",
-      description: "Bounces around absurdly and only pops after the fuse."
-    },
-    "seifenblasen-bombe": {
-      displayName: "Bubble Bomb",
-      description: "Drifts with the wind and blows mercenaries off slopes."
-    },
-    "keks-moerser": {
-      displayName: "Cookie Mortar",
-      description: "Heavy arcing shot with a crunchy impact from above."
-    },
-    dynamit: {
-      displayName: "Dynamite",
-      description: "Drop it, run away, cover your ears. Giant hole guaranteed."
-    },
-    "heilige-granate": {
-      displayName: "Holy Grenade",
-      description: "Hallelujah. The biggest bang in the entire arsenal."
-    },
-    banane: {
-      displayName: "Banana Bomb",
-      description: "Bursts on impact into five bouncing mini bananas."
-    },
-    luftschlag: {
-      displayName: "Air Strike",
-      description: "Four bombs out of the blue onto your aiming direction."
-    },
-    "baseball-schlaeger": {
-      displayName: "Baseball Bat",
-      description: "No crater, but a dream flight for whoever gets hit."
-    },
-    minigun: {
-      displayName: "Confetti Minigun",
-      description: "Ten rounds of sustained fire that chews through hills."
-    }
+    "kicher-bazooka": { displayName: "Giggler Bazooka", description: "The classic. Flies far, the wind joins in." },
+    "regenbogen-rakete": { displayName: "Rainbow Rocket", description: "Flat arc, barely any wind. Hits at long range." },
+    "bohrer-rakete": { displayName: "Drill Rocket", description: "Bites deep into the terrain. Narrow blast, deep hole." },
+    "konfetti-schrot": { displayName: "Confetti Shotgun", description: "Wide close-range spread. Low damage, lots of area." },
+    "keks-moerser": { displayName: "Cookie Mortar", description: "Steep arc straight over cover." },
+    minigun: { displayName: "Confetti Minigun", description: "Six rounds in quick succession. Weak alone, nasty together." },
+    "plunder-pistole": { displayName: "Plunder Pistol", description: "Instant shot, no charging. Precise, little punch." },
+    "splitter-granate": { displayName: "Shrapnel Grenade", description: "Reliable standard grenade with a short fuse." },
+    "enten-granate": { displayName: "Duck Grenade", description: "Quacks, bounces, then makes a proper racket." },
+    "heilige-granate": { displayName: "Holy Grenade", description: "Hallelujah. The widest blast in the whole arsenal." },
+    banane: { displayName: "Banana Bomb", description: "Bursts on impact into five bouncing mini bananas." },
+    "gummi-huhn": { displayName: "Rubber Chicken", description: "Bounces far and unpredictably. Ignores the wind." },
+    "seifenblasen-bombe": { displayName: "Bubble Bomb", description: "Drifts on the wind, huge cloud, little damage per hit." },
+    dynamit: { displayName: "Dynamite", description: "Dropped in place, detonates after four seconds." },
+    "baseball-schlaeger": { displayName: "Baseball Bat", description: "No crater, but a dream flight for whoever gets hit." },
+    "funk-bombenteppich": { displayName: "Radio Air Strike", description: "Five bombs in a line above the target." },
+    "leucht-salve": { displayName: "Flare Salvo", description: "Tight salvo of small incendiaries on one spot." },
+    "signal-schauer": { displayName: "Signal Shower", description: "Wide scatter. Hits a lot, hurts a little." },
+    "pfeifen-sturzflug": { displayName: "Whistle Dive", description: "One heavy bomb straight down." },
+    seilzug: { displayName: "Grapple Rope", description: "A tool, not a weapon. Fire, swing, climb." }
   }
 };
 
@@ -442,7 +503,6 @@ function localizeWeaponDefinition(
   language: SupportedLanguage
 ): ChaosKommandoWeaponDefinition {
   const text = weaponTexts[language]?.[definition.id];
-
   return text ? { ...definition, ...text } : definition;
 }
 
@@ -453,10 +513,8 @@ function localizeWeaponDefinitions(language: SupportedLanguage): ChaosKommandoWe
 const chaosKommandoText = {
   de: {
     waitingAction: "Chaos-Kommando wartet auf die naechste Aktion.",
-    playerTurn: (playerName: string, mercenaryName: string, weaponName: string) =>
-      `${playerName} ist dran | ${mercenaryName} mit ${weaponName}`,
-    wind: (direction: number, strength: number) =>
-      `${direction > 0 ? "Wind nach rechts" : "Wind nach links"} | ${Math.round(strength * 10)}`,
+    playerTurn: (playerName: string, mercenaryName: string, weaponName: string) => `${playerName} ist dran | ${mercenaryName} mit ${weaponName}`,
+    wind: (direction: number, strength: number) => `${direction > 0 ? "Wind nach rechts" : "Wind nach links"} | ${Math.round(strength * 10)}`,
     winner: (name: string) => `${name} gewinnt Chaos-Kommando!`,
     draw: "Alle Teams sind untergegangen.",
     smokeClears: "Der Rauch verzieht sich. Das naechste Team ist dran.",
@@ -470,17 +528,14 @@ const chaosKommandoText = {
     drowned: (name: string) => `${name} geht baden. Fuer immer.`,
     mineTriggered: "Eine Mine piept boese ...",
     crateDrop: "Eine Versorgungskiste schwebt ein!",
-    crateCollected: (name: string, weaponName: string, amount: number) =>
-      `${name} schnappt sich die Kiste: +${amount}x ${weaponName}.`,
+    crateCollected: (name: string, weaponName: string, amount: number) => `${name} schnappt sich die Kiste: +${amount}x ${weaponName}.`,
     crateDestroyed: "Die Versorgungskiste wurde zerlegt.",
     suddenDeath: "SUDDEN DEATH! Das Wasser steigt!"
   },
   en: {
     waitingAction: "Chaos Commando is waiting for the next action.",
-    playerTurn: (playerName: string, mercenaryName: string, weaponName: string) =>
-      `${playerName} is up | ${mercenaryName} with ${weaponName}`,
-    wind: (direction: number, strength: number) =>
-      `${direction > 0 ? "Wind right" : "Wind left"} | ${Math.round(strength * 10)}`,
+    playerTurn: (playerName: string, mercenaryName: string, weaponName: string) => `${playerName} is up | ${mercenaryName} with ${weaponName}`,
+    wind: (direction: number, strength: number) => `${direction > 0 ? "Wind right" : "Wind left"} | ${Math.round(strength * 10)}`,
     winner: (name: string) => `${name} wins Chaos Commando!`,
     draw: "All teams went down.",
     smokeClears: "The smoke clears. The next team is up.",
@@ -494,32 +549,49 @@ const chaosKommandoText = {
     drowned: (name: string) => `${name} goes for a swim. Forever.`,
     mineTriggered: "A mine is beeping angrily ...",
     crateDrop: "A supply crate is floating in!",
-    crateCollected: (name: string, weaponName: string, amount: number) =>
-      `${name} grabs the crate: +${amount}x ${weaponName}.`,
+    crateCollected: (name: string, weaponName: string, amount: number) => `${name} grabs the crate: +${amount}x ${weaponName}.`,
     crateDestroyed: "The supply crate got shredded.",
     suddenDeath: "SUDDEN DEATH! The water is rising!"
   }
-} satisfies Record<SupportedLanguage, {
-  waitingAction: string;
-  playerTurn: (playerName: string, mercenaryName: string, weaponName: string) => string;
-  wind: (direction: number, strength: number) => string;
-  winner: (name: string) => string;
-  draw: string;
-  smokeClears: string;
-  intro: string;
-  introLog: string;
-  start: string;
-  mercenaryForward: (playerName: string, mercenaryName: string) => string;
-  clockFaster: string;
-  retreat: string;
-  splash: (name: string) => string;
-  drowned: (name: string) => string;
-  mineTriggered: string;
-  crateDrop: string;
-  crateCollected: (name: string, weaponName: string, amount: number) => string;
-  crateDestroyed: string;
-  suddenDeath: string;
-}>;
+};
+
+/** Die vier Luftschlaege unterscheiden sich nur im Abwurfmuster. */
+type ChaosKommandoAirstrikeId =
+  | "funk-bombenteppich"
+  | "leucht-salve"
+  | "signal-schauer"
+  | "pfeifen-sturzflug";
+
+interface AirstrikePattern {
+  count: number;
+  /** Horizontaler Abstand der Bomben zueinander. */
+  spacing: number;
+  /** Hoehenversatz, damit sie nacheinander einschlagen. */
+  stagger: number;
+  /** Seitliche Anfangsgeschwindigkeit. */
+  drift: number;
+  dropSpeed: number;
+}
+
+const airstrikePatterns: Record<ChaosKommandoAirstrikeId, AirstrikePattern> = {
+  // Klassischer Bombenteppich: lange Linie, laeuft von hinten nach vorn ein.
+  "funk-bombenteppich": { count: 5, spacing: 92, stagger: 46, drift: 96, dropSpeed: 150 },
+  // Enge Salve auf einen Punkt, faellt fast senkrecht.
+  "leucht-salve": { count: 4, spacing: 34, stagger: 26, drift: 18, dropSpeed: 250 },
+  // Breiter, langsamer Schauer mit viel Streuung.
+  "signal-schauer": { count: 7, spacing: 128, stagger: 18, drift: 40, dropSpeed: 120 },
+  // Eine einzige schwere Bombe, senkrecht und schnell.
+  "pfeifen-sturzflug": { count: 1, spacing: 0, stagger: 0, drift: 0, dropSpeed: 420 }
+};
+
+function isAirstrikeWeapon(weaponId: ChaosKommandoWeaponId): weaponId is ChaosKommandoAirstrikeId {
+  return (
+    weaponId === "funk-bombenteppich" ||
+    weaponId === "leucht-salve" ||
+    weaponId === "signal-schauer" ||
+    weaponId === "pfeifen-sturzflug"
+  );
+}
 
 const mercenaryTemplates: Array<{
   role: ChaosKommandoMercenaryRole;
@@ -557,106 +629,167 @@ interface TerrainPreset {
   controlPoints: Array<{ x: number; y: number }>;
   /** Pre-carved caves and arches so maps start with real overhangs. */
   initialCraters: ChaosKommandoCraterState[];
+  /** Floating islands and rock spurs added above the heightmap. */
+  platforms: ChaosKommandoPlatformState[];
 }
 
+/**
+ * Die Kontrollpunkte setzen bewusst harte Kanten: zwei dicht beieinander
+ * liegende Punkte mit grossem Hoehenunterschied ergeben eine Steilwand, zwei
+ * mit gleicher Hoehe ein Plateau. Boegen entstehen aus einer Reihe von
+ * `initialCraters` unter einem Ruecken, schwebende Inseln aus `platforms`.
+ */
 const terrainPresets: TerrainPreset[] = [
   {
     id: "klapperkueste",
     name: "Klapperkueste",
     controlPoints: [
-      { x: 0, y: 826 },
-      { x: 150, y: 778 },
-      { x: 320, y: 652 },
-      { x: 430, y: 498 },
-      { x: 610, y: 560 },
-      { x: 820, y: 452 },
-      { x: 990, y: 522 },
-      { x: 1180, y: 690 },
-      { x: 1390, y: 558 },
-      { x: 1570, y: 432 },
-      { x: 1750, y: 506 },
-      { x: 1960, y: 644 },
-      { x: 2140, y: 718 },
-      { x: 2360, y: 834 }
+      { x: 0, y: 866 },
+      { x: 140, y: 800 },
+      { x: 300, y: 648 },
+      { x: 360, y: 470 },
+      { x: 470, y: 462 },
+      { x: 560, y: 466 },
+      { x: 620, y: 700 },
+      { x: 760, y: 742 },
+      { x: 830, y: 470 },
+      { x: 1000, y: 452 },
+      { x: 1060, y: 448 },
+      { x: 1130, y: 780 },
+      { x: 1290, y: 812 },
+      { x: 1400, y: 590 },
+      { x: 1520, y: 430 },
+      { x: 1660, y: 426 },
+      { x: 1720, y: 604 },
+      { x: 1880, y: 690 },
+      { x: 1990, y: 512 },
+      { x: 2110, y: 508 },
+      { x: 2180, y: 742 },
+      { x: 2360, y: 872 }
     ],
     initialCraters: [
-      { x: 610, y: 700, r: 66 },
-      { x: 1180, y: 830, r: 78 },
-      { x: 1750, y: 660, r: 62 }
+      { x: 620, y: 812, r: 74 },
+      { x: 700, y: 836, r: 70 },
+      { x: 1190, y: 898, r: 80 },
+      { x: 1280, y: 906, r: 72 },
+      { x: 1746, y: 700, r: 62 }
+    ],
+    platforms: [
+      { x: 940, y: 320, rx: 138, ry: 40 },
+      { x: 1780, y: 286, rx: 104, ry: 34 }
     ]
   },
   {
     id: "seeschlund",
     name: "Seeschlund",
     controlPoints: [
-      { x: 0, y: 792 },
-      { x: 210, y: 702 },
-      { x: 420, y: 530 },
-      { x: 640, y: 446 },
-      { x: 860, y: 608 },
-      { x: 1080, y: 742 },
-      { x: 1260, y: 620 },
-      { x: 1450, y: 458 },
-      { x: 1660, y: 508 },
-      { x: 1860, y: 656 },
-      { x: 2080, y: 578 },
-      { x: 2230, y: 494 },
-      { x: 2360, y: 734 }
+      { x: 0, y: 812 },
+      { x: 200, y: 706 },
+      { x: 260, y: 520 },
+      { x: 420, y: 512 },
+      { x: 480, y: 690 },
+      { x: 640, y: 830 },
+      { x: 800, y: 856 },
+      { x: 900, y: 612 },
+      { x: 1010, y: 442 },
+      { x: 1160, y: 438 },
+      { x: 1240, y: 632 },
+      { x: 1380, y: 796 },
+      { x: 1520, y: 566 },
+      { x: 1600, y: 446 },
+      { x: 1760, y: 452 },
+      { x: 1840, y: 690 },
+      { x: 2000, y: 738 },
+      { x: 2090, y: 520 },
+      { x: 2210, y: 516 },
+      { x: 2360, y: 796 }
     ],
     initialCraters: [
-      { x: 640, y: 590, r: 58 },
-      { x: 1450, y: 610, r: 70 },
-      { x: 2080, y: 720, r: 64 }
+      { x: 700, y: 930, r: 84 },
+      { x: 790, y: 946, r: 78 },
+      { x: 1084, y: 604, r: 66 },
+      { x: 1400, y: 890, r: 70 },
+      { x: 2150, y: 664, r: 60 }
+    ],
+    platforms: [
+      { x: 1300, y: 300, rx: 122, ry: 36 },
+      { x: 520, y: 344, rx: 96, ry: 32 },
+      { x: 1960, y: 328, rx: 110, ry: 34 }
     ]
   },
   {
     id: "brandungstreppe",
     name: "Brandungstreppe",
     controlPoints: [
-      { x: 0, y: 842 },
-      { x: 180, y: 764 },
-      { x: 360, y: 662 },
-      { x: 540, y: 560 },
-      { x: 700, y: 450 },
-      { x: 930, y: 612 },
-      { x: 1180, y: 760 },
-      { x: 1390, y: 594 },
+      { x: 0, y: 880 },
+      { x: 170, y: 872 },
+      { x: 200, y: 736 },
+      { x: 400, y: 730 },
+      { x: 430, y: 606 },
+      { x: 640, y: 600 },
+      { x: 670, y: 470 },
+      { x: 860, y: 466 },
+      { x: 900, y: 686 },
+      { x: 1120, y: 830 },
+      { x: 1300, y: 836 },
+      { x: 1340, y: 622 },
+      { x: 1540, y: 616 },
       { x: 1580, y: 462 },
-      { x: 1760, y: 526 },
-      { x: 1940, y: 650 },
-      { x: 2160, y: 706 },
-      { x: 2360, y: 812 }
+      { x: 1790, y: 458 },
+      { x: 1830, y: 640 },
+      { x: 2040, y: 636 },
+      { x: 2080, y: 782 },
+      { x: 2360, y: 860 }
     ],
     initialCraters: [
-      { x: 700, y: 590, r: 62 },
-      { x: 1580, y: 600, r: 66 },
-      { x: 930, y: 780, r: 72 }
+      { x: 900, y: 800, r: 72 },
+      { x: 990, y: 842, r: 76 },
+      { x: 1210, y: 926, r: 82 },
+      { x: 1830, y: 748, r: 64 }
+    ],
+    platforms: [
+      { x: 1110, y: 340, rx: 126, ry: 38 },
+      { x: 1700, y: 268, rx: 92, ry: 30 }
     ]
   },
   {
     id: "wurmfelsen",
     name: "Wurmfelsen",
     controlPoints: [
-      { x: 0, y: 860 },
-      { x: 200, y: 730 },
-      { x: 380, y: 520 },
-      { x: 560, y: 470 },
-      { x: 720, y: 640 },
-      { x: 900, y: 780 },
-      { x: 1120, y: 560 },
-      { x: 1300, y: 440 },
-      { x: 1480, y: 500 },
-      { x: 1640, y: 700 },
-      { x: 1840, y: 760 },
-      { x: 2040, y: 560 },
-      { x: 2200, y: 500 },
-      { x: 2360, y: 720 }
+      { x: 0, y: 892 },
+      { x: 180, y: 742 },
+      { x: 240, y: 498 },
+      { x: 420, y: 470 },
+      { x: 470, y: 464 },
+      { x: 530, y: 700 },
+      { x: 700, y: 812 },
+      { x: 860, y: 838 },
+      { x: 940, y: 566 },
+      { x: 1080, y: 424 },
+      { x: 1240, y: 420 },
+      { x: 1310, y: 660 },
+      { x: 1470, y: 706 },
+      { x: 1560, y: 486 },
+      { x: 1700, y: 480 },
+      { x: 1780, y: 742 },
+      { x: 1950, y: 800 },
+      { x: 2040, y: 542 },
+      { x: 2180, y: 496 },
+      { x: 2250, y: 620 },
+      { x: 2360, y: 826 }
     ],
     initialCraters: [
-      { x: 560, y: 610, r: 74 },
-      { x: 1300, y: 590, r: 82 },
-      { x: 2100, y: 680, r: 68 },
-      { x: 900, y: 920, r: 60 }
+      { x: 540, y: 828, r: 78 },
+      { x: 630, y: 852, r: 74 },
+      { x: 1320, y: 780, r: 72 },
+      { x: 1410, y: 806, r: 68 },
+      { x: 1790, y: 870, r: 76 },
+      { x: 2100, y: 630, r: 58 }
+    ],
+    platforms: [
+      { x: 800, y: 306, rx: 116, ry: 36 },
+      { x: 1640, y: 322, rx: 132, ry: 40 },
+      { x: 2240, y: 300, rx: 88, ry: 28 }
     ]
   }
 ];
@@ -797,6 +930,85 @@ function flattenTerrain(samples: number[], centerX: number, width: number, targe
   }
 }
 
+/**
+ * Schneidet Boegen in die Huegelruecken.
+ *
+ * Ein Bogen entsteht, wenn eine waagerechte Kraterkette einen Huegel auf einer
+ * festen Hoehe komplett durchtrennt: Ueber der Kette bleibt das Dach stehen,
+ * an beiden Flanken laeuft das Loch genau auf Bodenniveau aus. Ergebnis ist
+ * eine begehbare Bruecke mit Durchschuss darunter. Die Hoehenkarte allein kann
+ * das nicht, weil sie pro x nur eine Oberflaeche kennt.
+ */
+function carveArches(
+  samples: number[],
+  spawnPoints: number[],
+  craters: ChaosKommandoCraterState[]
+): void {
+  const roofThickness = 118;
+  const craterRadius = 44;
+  const minSpan = 190;
+  const maxSpan = 640;
+  /**
+   * Die Kette endet knapp innerhalb der Flanke. Ohne diesen Versatz wuerde sie
+   * den Huegel vollstaendig durchtrennen und das Dach als freischwebende
+   * Scholle zuruecklassen; mit ihm bleibt eine schmale Lippe stehen, die das
+   * Dach traegt und die Bogenoeffnung trotzdem freilegt.
+   */
+  const flankInset = craterRadius * 0.5;
+  const carved: number[] = [];
+
+  for (let index = 8; index < samples.length - 8; index += 1) {
+    const peakY = samples[index];
+    const peakX = index * sampleSpacing;
+
+    // Nur echte lokale Gipfel, mit Abstand zu Startpunkten und anderen Boegen.
+    if (peakY > samples[index - 8] || peakY > samples[index + 8]) {
+      continue;
+    }
+    if (spawnPoints.some((spawnX) => Math.abs(spawnX - peakX) < 200)) {
+      continue;
+    }
+    if (carved.some((archX) => Math.abs(archX - peakX) < 460)) {
+      continue;
+    }
+
+    const archY = peakY + roofThickness;
+    let leftIndex = index;
+    let rightIndex = index;
+
+    while (leftIndex > 0 && samples[leftIndex] < archY) {
+      leftIndex -= 1;
+    }
+    while (rightIndex < samples.length - 1 && samples[rightIndex] < archY) {
+      rightIndex += 1;
+    }
+
+    const span = (rightIndex - leftIndex) * sampleSpacing;
+
+    if (span < minSpan || span > maxSpan) {
+      continue;
+    }
+
+    const from = leftIndex * sampleSpacing + flankInset;
+    const to = rightIndex * sampleSpacing - flankInset;
+
+    for (let x = from; x <= to; x += craterRadius * 1.25) {
+      craters.push({
+        x: Math.round(x),
+        y: Math.round(archY + craterRadius - 10),
+        r: craterRadius
+      });
+    }
+    craters.push({ x: Math.round(to), y: Math.round(archY + craterRadius - 10), r: craterRadius });
+
+    carved.push(peakX);
+
+    if (carved.length >= 2) {
+      return;
+    }
+  }
+}
+
 function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainState {
   const preset = terrainPresets[Math.abs(seed) % terrainPresets.length] ?? terrainPresets[0];
   const sampleCount = Math.floor(terrainWidth / sampleSpacing) + 1;
@@ -811,13 +1023,16 @@ function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainS
     return clamp(sculpted, 410, initialWaterlineY - 66);
   });
 
-  const spawnAnchors = createSpawnAnchors(playerCount);
+  const spawnPoints = createSpawnAnchors(playerCount).flatMap((anchorX) =>
+    createMercenarySpawnXs(anchorX, terrainWidth)
+  );
 
-  for (const anchorX of spawnAnchors) {
-    for (const spawnX of createMercenarySpawnXs(anchorX, terrainWidth)) {
-      flattenTerrain(samples, spawnX, 118, clamp(resolveSampleHeight(samples, spawnX) - 6, 430, 660));
-    }
+  for (const spawnX of spawnPoints) {
+    flattenTerrain(samples, spawnX, 118, clamp(resolveSampleHeight(samples, spawnX) - 6, 430, 660));
   }
+
+  const craters = preset.initialCraters.map((crater) => ({ ...crater }));
+  carveArches(samples, spawnPoints, craters);
 
   return {
     mapId: preset.id,
@@ -827,7 +1042,8 @@ function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainS
     waterlineY: initialWaterlineY,
     sampleSpacing,
     samples,
-    craters: preset.initialCraters.map((crater) => ({ ...crater }))
+    craters,
+    platforms: preset.platforms.map((platform) => ({ ...platform }))
   };
 }
 
@@ -838,9 +1054,26 @@ function resolveBaseGroundY(terrain: ChaosKommandoTerrainState, x: number): numb
   return resolveSampleHeight(terrain.samples, clamp(x, 0, terrain.width));
 }
 
+/** Schwebende Inseln fuegen Masse oberhalb der Hoehenkarte hinzu. */
+function isInsidePlatform(terrain: ChaosKommandoTerrainState, x: number, y: number): boolean {
+  const platforms = terrain.platforms;
+
+  for (let index = 0; index < platforms.length; index += 1) {
+    const platform = platforms[index];
+    const dx = (x - platform.x) / platform.rx;
+    const dy = (y - platform.y) / platform.ry;
+
+    if (dx * dx + dy * dy < 1) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
 /**
- * True 2D solidity test: below the heightmap AND not inside any crater.
- * This is what makes tunnels, caves and overhangs possible.
+ * True 2D solidity test: below the heightmap or inside a platform, and not
+ * inside any crater. This is what makes tunnels, caves and overhangs possible.
  */
 function isTerrainSolid(terrain: ChaosKommandoTerrainState, x: number, y: number): boolean {
   if (x < 0 || x > terrain.width || y < 0) {
@@ -851,7 +1084,7 @@ function isTerrainSolid(terrain: ChaosKommandoTerrainState, x: number, y: number
     return true;
   }
 
-  if (y < resolveBaseGroundY(terrain, x)) {
+  if (y < resolveBaseGroundY(terrain, x) && !isInsidePlatform(terrain, x, y)) {
     return false;
   }
 
@@ -898,23 +1131,29 @@ function resolveSpawnSurfaceY(terrain: ChaosKommandoTerrainState, x: number): nu
 }
 
 function buildAmmo(): Record<ChaosKommandoWeaponId, number> {
+  // Nur der Schlaeger ist unbegrenzt. Alles andere ist knapp und wird
+  // ueber Nachschubkisten aufgefuellt.
   return {
-    "kicher-bazooka": 99,
-    "enten-granate": 99,
-    "plunder-pistole": 99,
-    "regenbogen-rakete": 1,
-    "splitter-granate": 3,
-    "konfetti-schrot": 4,
-    "bohrer-rakete": 2,
-    "gummi-huhn": 2,
-    "seifenblasen-bombe": 2,
-    "keks-moerser": 3,
-    dynamit: 2,
-    "heilige-granate": 1,
-    banane: 2,
-    luftschlag: 1,
-    "baseball-schlaeger": 3,
-    minigun: 3
+    "baseball-schlaeger": Number.POSITIVE_INFINITY,
+    seilzug: 4,
+    "kicher-bazooka": 6,
+    "splitter-granate": 4,
+    "plunder-pistole": 5,
+    "enten-granate": 0,
+    "regenbogen-rakete": 0,
+    "konfetti-schrot": 0,
+    "bohrer-rakete": 0,
+    "gummi-huhn": 0,
+    "seifenblasen-bombe": 0,
+    "keks-moerser": 0,
+    dynamit: 0,
+    "heilige-granate": 0,
+    banane: 0,
+    minigun: 0,
+    "funk-bombenteppich": 0,
+    "leucht-salve": 0,
+    "signal-schauer": 0,
+    "pfeifen-sturzflug": 0
   };
 }
 
@@ -951,6 +1190,7 @@ function createMercenary(
     aimAngleRad: mercenaryIndex % 2 === 0 ? -Math.PI / 4 : (-Math.PI * 3) / 4,
     ammo: buildAmmo(),
     moveInputX: 0,
+    moveInputY: 0,
     jumpReadyAt: 0,
     airborneFromY: null,
     deathExploded: false
@@ -963,17 +1203,27 @@ function createMines(
   seed: number
 ): RuntimeMineState[] {
   const rng = createRng(seed ^ 0x77aa11);
-  const spawnAnchors = createSpawnAnchors(playerCount);
+  // Gegen die echten Soeldner-Startpunkte pruefen, nicht nur gegen den Team-Anker.
+  // Die Soeldner stehen bei anchor-250, anchor und anchor+250; eine Mine bei
+  // anchor+240 lag damit frueher direkt unter einer Figur.
+  const spawnPoints = createSpawnAnchors(playerCount).flatMap((anchor) =>
+    createMercenarySpawnXs(anchor, terrain.width)
+  );
   const mines: RuntimeMineState[] = [];
   const mineCount = 5 + playerCount;
   let attempts = 0;
 
-  while (mines.length < mineCount && attempts < 80) {
+  while (mines.length < mineCount && attempts < 240) {
     attempts += 1;
     const x = 140 + rng() * (terrain.width - 280);
-    const nearSpawn = spawnAnchors.some((anchor) => Math.abs(anchor - x) < 220);
+    const nearSpawn = spawnPoints.some((spawnX) => Math.abs(spawnX - x) < minMineSpawnDistance);
 
     if (nearSpawn) {
+      continue;
+    }
+
+    // Minen auch untereinander auf Abstand halten, sonst entsteht ein Minenfeld.
+    if (mines.some((mine) => Math.abs(mine.x - x) < mineRadius * 6)) {
       continue;
     }
 
@@ -1054,6 +1304,33 @@ function createPlayers(
 
 function resolveFirstAliveMercenaryId(player: RuntimePlayerState | undefined): string {
   return player?.mercenaries.find((mercenary) => mercenary.alive)?.id ?? "";
+}
+
+/**
+ * Reihum statt frei waehlbar: nach dem zuletzt eingesetzten Soeldner ist der
+ * naechste lebende an der Reihe. Tote werden uebersprungen, ohne die Reihenfolge
+ * durcheinanderzubringen.
+ */
+function resolveRotatedMercenaryId(
+  player: RuntimePlayerState | undefined,
+  lastUsedMercenaryId: string | undefined
+): string {
+  if (!player) {
+    return "";
+  }
+
+  const roster = player.mercenaries;
+  const startIndex = roster.findIndex((mercenary) => mercenary.id === lastUsedMercenaryId);
+
+  for (let offset = 1; offset <= roster.length; offset += 1) {
+    const candidate = roster[(startIndex + offset + roster.length) % roster.length];
+
+    if (candidate?.alive) {
+      return candidate.id;
+    }
+  }
+
+  return resolveFirstAliveMercenaryId(player);
 }
 
 function findPlayer(state: { players: RuntimePlayerState[] }, playerId: string): RuntimePlayerState | undefined {
@@ -1140,8 +1417,12 @@ function resolveProjectileRadius(weaponId: ChaosKommandoWeaponId): number {
       return 14;
     case "banane":
       return 10;
-    case "luftschlag":
-      return 10;
+    case "funk-bombenteppich":
+    case "leucht-salve":
+    case "signal-schauer":
+      return 9;
+    case "pfeifen-sturzflug":
+      return 13;
     case "kicher-bazooka":
     case "regenbogen-rakete":
     default:
@@ -1194,8 +1475,10 @@ function buildTurnState(players: RuntimePlayerState[], now: number): RuntimeTurn
     turnNumber: 1,
     currentPlayerId: currentPlayer?.playerId ?? "",
     activeMercenaryId,
+    lastMercenaryIdByPlayer: currentPlayer ? { [currentPlayer.playerId]: activeMercenaryId } : {},
     currentWeaponId: resolveAvailableWeapon(activeMercenary, "kicher-bazooka"),
-    turnEndsAt: now + turnDurationMs,
+    turnEndsAt: now + turnPrepMs + turnDurationMs,
+    prepEndsAt: now + turnPrepMs,
     hasFired: false,
     resolvingShot: false,
     chargeStartedAt: null,
@@ -1316,7 +1599,8 @@ function spawnCrateIfDue(
     "dynamit",
     "heilige-granate",
     "banane",
-    "luftschlag",
+    "funk-bombenteppich",
+    "pfeifen-sturzflug",
     "minigun",
     "regenbogen-rakete",
     "bohrer-rakete",
@@ -1394,7 +1678,8 @@ function startPlayerTurn(
       ...player,
       mercenaries: player.mercenaries.map((mercenary) => ({
         ...mercenary,
-        moveInputX: 0
+        moveInputX: 0,
+        moveInputY: 0
       }))
     })),
     turn: {
@@ -1403,7 +1688,9 @@ function startPlayerTurn(
       currentPlayerId: playerId,
       activeMercenaryId,
       currentWeaponId: nextWeaponId,
-      turnEndsAt: now + turnDurationMs,
+      turnEndsAt: now + turnPrepMs + turnDurationMs,
+      prepEndsAt: now + turnPrepMs,
+      lastMercenaryIdByPlayer: { ...state.turn.lastMercenaryIdByPlayer, [playerId]: activeMercenaryId },
       hasFired: false,
       resolvingShot: false,
       chargeStartedAt: null,
@@ -1450,7 +1737,7 @@ function resolveNextTurn(state: ChaosKommandoRuntimeState, now: number, reason: 
     return startPlayerTurn(
       state,
       nextPlayer.playerId,
-      resolveFirstAliveMercenaryId(nextPlayer),
+      resolveRotatedMercenaryId(nextPlayer, state.turn.lastMercenaryIdByPlayer[nextPlayer.playerId]),
       now,
       state.turn.turnNumber + 1,
       reason
@@ -1474,7 +1761,9 @@ function updateTerrainForExplosion(
     return terrain;
   }
 
-  const craterRadius = Math.max(8, radius * 0.9);
+  // Der Umgebungsschaden ist bewusst deutlich kleiner als der Trefferradius:
+  // Spieler werden auf `blastRadius` getroffen, das Terrain nur auf 67.5% davon.
+  const craterRadius = Math.max(6, radius * 0.675);
 
   return {
     ...terrain,
@@ -1792,13 +2081,27 @@ function resolveDeathSequences(
         updatedAt: now
       };
 
-  return startNextDeathSequence(
+  const advanced = startNextDeathSequence(
     {
       ...withGravestone,
       activeDeathSequence: null
     },
     now
   );
+
+  if (advanced.activeDeathSequence || advanced.deathQueueMercenaryIds.length > 0) {
+    return advanced;
+  }
+
+  // Letzter Todesfall abgearbeitet: der Zug bleibt liegen, damit die Kamera
+  // Uebersicht, Gefallenen und Jubel zeigen kann, bevor der naechste dran ist.
+  return {
+    ...advanced,
+    turn: {
+      ...advanced.turn,
+      settleEndsAt: Math.max(advanced.turn.settleEndsAt ?? 0, now + celebrationDelayMs)
+    }
+  };
 }
 
 function markProjectileSettling(state: ChaosKommandoRuntimeState, now: number): ChaosKommandoRuntimeState {
@@ -1969,6 +2272,66 @@ function createProjectile(
   };
 }
 
+/** Ein einzelner Schuss einer Salve, mit leichter Streuung je Index. */
+function createBurstProjectile(
+  state: ChaosKommandoRuntimeState,
+  mercenary: RuntimeMercenaryState,
+  definition: ChaosKommandoWeaponDefinition,
+  weaponId: ChaosKommandoWeaponId,
+  now: number,
+  index: number
+): RuntimeProjectileState {
+  const rng = createRng((state.seed ^ (index * 7919)) >>> 0);
+  const angle = mercenary.aimAngleRad + (rng() - 0.5) * 0.09;
+  const speed = definition.projectileSpeed * (0.92 + rng() * 0.14);
+  const offset = mercenary.radius * 1.35;
+
+  return createProjectile(
+    `projectile:${now}:${mercenary.id}:burst${index}`,
+    weaponId,
+    definition,
+    mercenary,
+    mercenary.x + Math.cos(angle) * offset,
+    mercenary.y + Math.sin(angle) * offset,
+    Math.cos(angle) * speed,
+    Math.sin(angle) * speed
+  );
+}
+
+/** Schiebt eine laufende Salve weiter und feuert faellige Schuesse ab. */
+function advanceBurst(state: ChaosKommandoRuntimeState, now: number): ChaosKommandoRuntimeState {
+  const burst = state.burst;
+
+  if (!burst || now < burst.nextAtMs) {
+    return state;
+  }
+
+  const mercenary = findMercenaryById(state, burst.mercenaryId);
+
+  if (!mercenary || !mercenary.alive) {
+    return { ...state, burst: null };
+  }
+
+  const definition = findWeaponDefinition(burst.weaponId);
+  const projectile = createBurstProjectile(state, mercenary, definition, burst.weaponId, now, burst.index);
+  const remaining = burst.remaining - 1;
+
+  return {
+    ...state,
+    projectiles: [...state.projectiles, projectile],
+    burst:
+      remaining > 0
+        ? {
+            ...burst,
+            remaining,
+            index: burst.index + 1,
+            nextAtMs: now + burst.intervalMs
+          }
+        : null,
+    updatedAt: now
+  };
+}
+
 function buildFiredProjectiles(
   state: ChaosKommandoRuntimeState,
   mercenary: RuntimeMercenaryState,
@@ -1997,25 +2360,26 @@ function buildFiredProjectiles(
     ];
   }
 
-  if (weaponId === "luftschlag") {
-    // Four bombs raining down onto the aiming direction.
+  if (isAirstrikeWeapon(weaponId)) {
+    const pattern = airstrikePatterns[weaponId];
     const targetX = clamp(
       mercenary.x + Math.cos(angle) * 560,
       120,
       state.terrain.width - 120
     );
     const driftDirection = Math.cos(angle) >= 0 ? 1 : -1;
+    const half = (pattern.count - 1) / 2;
 
-    return Array.from({ length: 4 }, (_, index) =>
+    return Array.from({ length: pattern.count }, (_, index) =>
       createProjectile(
         `projectile:${now}:${mercenary.id}:${index}`,
         weaponId,
         definition,
         mercenary,
-        targetX - driftDirection * 190 + driftDirection * index * 64,
-        -50 - index * 44,
-        driftDirection * 96,
-        150,
+        targetX + driftDirection * (index - half) * pattern.spacing,
+        -50 - index * pattern.stagger,
+        driftDirection * pattern.drift,
+        pattern.dropSpeed,
         { armed: true }
       )
     );
@@ -2040,24 +2404,9 @@ function buildFiredProjectiles(
   }
 
   if (weaponId === "minigun") {
-    const rng = createRng(state.seed ^ now);
-
-    return Array.from({ length: 10 }, (_, index) => {
-      const projectileAngle = angle + (rng() - 0.5) * 0.11;
-      const speed = definition.projectileSpeed * (0.9 + rng() * 0.18);
-      const startOffset = mercenary.radius * 1.35 + index * 9;
-
-      return createProjectile(
-        `projectile:${now}:${mercenary.id}:${index}`,
-        weaponId,
-        definition,
-        mercenary,
-        mercenary.x + Math.cos(projectileAngle) * startOffset,
-        mercenary.y + Math.sin(projectileAngle) * startOffset,
-        Math.cos(projectileAngle) * speed,
-        Math.sin(projectileAngle) * speed
-      );
-    });
+    // Nur der erste Schuss faellt hier; die restlichen holt `advanceBurst`
+    // im Tick nach, damit es wirklich nacheinander knallt.
+    return [createBurstProjectile(state, mercenary, definition, weaponId, now, 0)];
   }
 
   return [
@@ -2122,7 +2471,8 @@ function fireActiveWeapon(
                     [weaponId]: Math.max(0, (mercenary.ammo[weaponId] ?? 0) - 1)
                   },
                   facing: Math.cos(angle) >= 0 ? ("right" as const) : ("left" as const),
-                  moveInputX: 0
+                  moveInputX: 0,
+        moveInputY: 0
                 }
               : mercenary
           )
@@ -2199,7 +2549,8 @@ function fireActiveWeapon(
               [weaponId]: Math.max(0, (mercenary.ammo[weaponId] ?? 0) - 1)
             },
             facing: Math.cos(activeMercenary.aimAngleRad) >= 0 ? ("right" as const) : ("left" as const),
-            moveInputX: 0
+            moveInputX: 0,
+        moveInputY: 0
           }
         : mercenary
     )
@@ -2208,6 +2559,18 @@ function fireActiveWeapon(
     ...state,
     players: refreshPlayerSummaries(nextPlayers),
     projectiles: [...state.projectiles, ...projectiles],
+    // Die Minigun feuert sechs Schuss im Abstand von 90 ms.
+    burst:
+      weaponId === "minigun"
+        ? {
+            weaponId,
+            mercenaryId: activeMercenary.id,
+            remaining: 5,
+            index: 1,
+            intervalMs: 90,
+            nextAtMs: now + 90
+          }
+        : null,
     turn: {
       ...state.turn,
       currentWeaponId: weaponId,
@@ -2658,6 +3021,107 @@ function applyCratePhysics(
   };
 }
 
+/**
+ * Wirft den Haken entlang des Zielwinkels und liefert den ersten festen Punkt.
+ * Der Strahl startet knapp ausserhalb der Figur, damit man sich nicht am
+ * eigenen Standboden verankert.
+ */
+function castRope(
+  terrain: ChaosKommandoTerrainState,
+  mercenary: RuntimeMercenaryState
+): ChaosKommandoRopeState | null {
+  const ux = Math.cos(mercenary.aimAngleRad);
+  const uy = Math.sin(mercenary.aimAngleRad);
+
+  for (let distance = mercenary.radius + 6; distance <= ropeMaxCastLength; distance += ropeCastStep) {
+    const x = mercenary.x + ux * distance;
+    const y = mercenary.y + uy * distance;
+
+    if (x < 4 || x > terrain.width - 4 || y < 4) {
+      return null;
+    }
+
+    if (isTerrainSolid(terrain, x, y)) {
+      return {
+        mercenaryId: mercenary.id,
+        anchorX: x,
+        anchorY: y,
+        length: Math.max(ropeMinLength, distance)
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Ein Schwungschritt am Seil.
+ *
+ * Ablauf: Schwerkraft und Stickeingabe wirken frei, danach zieht die
+ * Seilbedingung die Figur zurueck auf den Kreis um den Anker und entfernt den
+ * radialen Anteil der Geschwindigkeit. Genau diese Trennung macht den
+ * Pendelschwung stabil, ohne dass das Seil federt.
+ */
+function applyRopeStep(
+  terrain: ChaosKommandoTerrainState,
+  mercenary: RuntimeMercenaryState,
+  rope: ChaosKommandoRopeState,
+  seconds: number
+): { rope: ChaosKommandoRopeState } {
+  mercenary.grounded = false;
+  mercenary.airborneFromY = null;
+  mercenary.vy += gravity * seconds;
+  mercenary.vx += mercenary.moveInputX * ropeSwingAcceleration * seconds;
+  mercenary.vx *= 0.995;
+
+  if (Math.abs(mercenary.moveInputX) > 0.12) {
+    mercenary.facing = mercenary.moveInputX > 0 ? "right" : "left";
+  }
+
+  // Stick nach oben verkuerzt das Seil (klettern), nach unten verlaengert es.
+  const nextLength = clamp(
+    rope.length + mercenary.moveInputY * ropeReelSpeed * seconds,
+    ropeMinLength,
+    ropeMaxCastLength
+  );
+
+  mercenary.x = clamp(
+    mercenary.x + mercenary.vx * seconds,
+    mercenary.radius + 8,
+    terrain.width - mercenary.radius - 8
+  );
+  mercenary.y += mercenary.vy * seconds;
+
+  const dx = mercenary.x - rope.anchorX;
+  const dy = mercenary.y - rope.anchorY;
+  const distance = Math.max(0.001, Math.hypot(dx, dy));
+
+  if (distance > nextLength) {
+    const nx = dx / distance;
+    const ny = dy / distance;
+    mercenary.x = rope.anchorX + nx * nextLength;
+    mercenary.y = rope.anchorY + ny * nextLength;
+
+    const radial = mercenary.vx * nx + mercenary.vy * ny;
+    if (radial > 0) {
+      mercenary.vx -= nx * radial * (1 + ropeRadialDamping);
+      mercenary.vy -= ny * radial * (1 + ropeRadialDamping);
+    }
+  }
+
+  // Anschlagen an Terrain bremst, loest das Seil aber nicht.
+  if (isTerrainSolid(terrain, mercenary.x, mercenary.y + mercenary.radius * 0.8)) {
+    mercenary.y -= 3;
+    mercenary.vy = Math.min(0, mercenary.vy) * 0.3;
+  }
+  if (isTerrainSolid(terrain, mercenary.x, mercenary.y - mercenary.radius * 0.8)) {
+    mercenary.y += 3;
+    mercenary.vy = Math.max(0, mercenary.vy) * 0.3;
+  }
+
+  return { rope: { ...rope, length: nextLength } };
+}
+
 function applyMercenaryPhysics(
   state: ChaosKommandoRuntimeState,
   deltaMs: number,
@@ -2667,6 +3131,9 @@ function applyMercenaryPhysics(
   const terrain = state.terrain;
   const text = chaosKommandoText[state.language];
   let drownedName: string | null = null;
+  // Das Seil reisst, sobald sein Ankerpunkt weggesprengt wurde.
+  let nextRope: ChaosKommandoRopeState | null =
+    state.rope && isTerrainSolid(terrain, state.rope.anchorX, state.rope.anchorY) ? state.rope : null;
   const nextPlayers = state.players.map((player) => ({
     ...player,
     mercenaries: player.mercenaries.map((mercenary) => {
@@ -2678,6 +3145,24 @@ function applyMercenaryPhysics(
       const nextMercenary = { ...mercenary };
       const terrainLeft = nextMercenary.radius + 8;
       const terrainRight = terrain.width - nextMercenary.radius - 8;
+
+      // Am Seil laeuft weder Geh- noch Flugphysik: der Pendelschritt ersetzt beide.
+      if (nextRope && nextRope.mercenaryId === nextMercenary.id) {
+        if (!nextMercenary.alive) {
+          nextRope = null;
+        } else {
+          nextRope = applyRopeStep(terrain, nextMercenary, nextRope, seconds).rope;
+
+          if (nextMercenary.y + nextMercenary.radius * 0.4 > terrain.waterlineY) {
+            drownedName = nextMercenary.name;
+            nextMercenary.hp = 0;
+            nextMercenary.alive = false;
+            nextRope = null;
+          }
+
+          return nextMercenary;
+        }
+      }
 
       if (nextMercenary.grounded) {
         if (isActiveMercenary && Math.abs(nextMercenary.moveInputX) > 0.12) {
@@ -2815,6 +3300,7 @@ function applyMercenaryPhysics(
   const nextState: ChaosKommandoRuntimeState = {
     ...state,
     players: refreshedPlayers,
+    rope: nextRope,
     explosions: state.explosions.filter((explosion) => now - explosion.createdAt <= 950),
     actionLog: drownedName
       ? pushActionLog(state.actionLog, text.drowned(drownedName))
@@ -2865,6 +3351,7 @@ function resolveWinnerLock(state: ChaosKommandoRuntimeState, now: number): Chaos
 function maybeAdvanceAfterShot(state: ChaosKommandoRuntimeState, now: number): ChaosKommandoRuntimeState {
   if (
     !state.turn.resolvingShot ||
+    state.burst !== null ||
     state.projectiles.length > 0 ||
     state.activeDeathSequence ||
     state.deathQueueMercenaryIds.length > 0
@@ -2911,6 +3398,7 @@ function buildPublicPlayers(players: RuntimePlayerState[]): ChaosKommandoPlayerS
     mercenaries: player.mercenaries.map(
       ({
         moveInputX: _moveInputX,
+        moveInputY: _moveInputY,
         jumpReadyAt: _jumpReadyAt,
         airborneFromY: _airborneFromY,
         deathExploded: _deathExploded,
@@ -2949,7 +3437,11 @@ function buildPublicCrates(crates: RuntimeCrateState[]): ChaosKommandoCrateState
 }
 
 function buildPublicTurn(turn: RuntimeTurnState): ChaosKommandoTurnState {
-  const { orderPlayerIds: _orderPlayerIds, ...publicTurn } = turn;
+  const {
+    orderPlayerIds: _orderPlayerIds,
+    lastMercenaryIdByPlayer: _lastMercenaryIdByPlayer,
+    ...publicTurn
+  } = turn;
   return publicTurn;
 }
 
@@ -2965,7 +3457,8 @@ function buildControllerState(state: ChaosKommandoRuntimeState): ChaosKommandoSt
       // The controller UI does not render terrain; omitting the heightmap and
       // craters keeps the 60 Hz controller stream dramatically smaller.
       samples: [],
-      craters: []
+      craters: [],
+      platforms: []
     },
     players: buildPublicPlayers(state.players),
     turn: buildPublicTurn(state.turn),
@@ -2975,6 +3468,7 @@ function buildControllerState(state: ChaosKommandoRuntimeState): ChaosKommandoSt
     gravestones: [],
     mines: [],
     crates: [],
+    rope: null,
     wind: state.wind,
     suddenDeath: state.suddenDeath,
     winnerPlayerId: state.winnerPlayerId,
@@ -3030,6 +3524,8 @@ export const chaosKommandoServerGame: ServerGame<
       gravestones: [],
       mines: createMines(terrain, context.players.length || 2, seed),
       crates: [],
+      rope: null,
+      burst: null,
       wind: buildWind(seed, context.language),
       suddenDeath: false,
       isDraw: false,
@@ -3067,6 +3563,10 @@ export const chaosKommandoServerGame: ServerGame<
     ) as ChaosKommandoRuntimeState;
   },
   handleInput(state, input, context) {
+    // Zeitspannen (Aufladen, Sprung-Cooldown, Zugende) werden bewusst nur gegen
+    // `context.now` gerechnet. `input.sentAt` kommt von der Uhr des Telefons und
+    // laeuft dort haeufig um Sekunden falsch; das liess den Ladebalken sofort
+    // auf volle Kraft springen und den Zug direkt ablaufen.
     if (state.phase !== "playing") {
       return state;
     }
@@ -3082,27 +3582,19 @@ export const chaosKommandoServerGame: ServerGame<
       return state;
     }
 
+    // Waehrend der Kamerafahrt bleibt die Figur stehen. Waffenwechsel und
+    // Zielen sind erlaubt, damit man den Zug vorbereiten kann.
+    if (
+      context.now < state.turn.prepEndsAt &&
+      (input.type === "move" || input.type === "jump" || input.type === "fire:start" || input.type === "fire:release")
+    ) {
+      return state;
+    }
+
+    // Soeldner werden reihum eingesetzt. Eine Auswahl gibt es bewusst nicht
+    // mehr; alte Clients duerfen den Input trotzdem schicken.
     if (input.type === "select-mercenary") {
-      const nextMercenary = player.mercenaries.find((mercenary) => mercenary.id === input.mercenaryId && mercenary.alive);
-
-      if (!nextMercenary || state.turn.hasFired || state.turn.resolvingShot) {
-        return state;
-      }
-
-      return startPlayerTurn(
-        {
-          ...state,
-          turn: {
-            ...state.turn,
-            currentPlayerId: player.playerId
-          }
-        },
-        player.playerId,
-        nextMercenary.id,
-        input.sentAt ?? context.now,
-        state.turn.turnNumber,
-        chaosKommandoText[state.language].mercenaryForward(player.name, nextMercenary.name)
-      );
+      return state;
     }
 
     if (input.type === "select-weapon") {
@@ -3123,14 +3615,15 @@ export const chaosKommandoServerGame: ServerGame<
             chargeStartedAt: null,
             chargeRatio: 0
           },
-          updatedAt: input.sentAt ?? context.now
+          updatedAt: context.now
         },
-        input.sentAt ?? context.now
+        context.now
       );
     }
 
     if (input.type === "move") {
       const nextX = clamp(input.moveX, -1, 1);
+      const nextY = clamp(input.moveY, -1, 1);
 
       return syncTurnPresentation(
         {
@@ -3141,14 +3634,15 @@ export const chaosKommandoServerGame: ServerGame<
               mercenary.id === activeMercenary.id
                 ? {
                     ...mercenary,
-                    moveInputX: nextX
+                    moveInputX: nextX,
+                    moveInputY: nextY
                   }
                 : mercenary
             )
           })),
-          updatedAt: input.sentAt ?? context.now
+          updatedAt: context.now
         },
-        input.sentAt ?? context.now
+        context.now
       );
     }
 
@@ -3173,14 +3667,14 @@ export const chaosKommandoServerGame: ServerGame<
                 : mercenary
             )
           })),
-          updatedAt: input.sentAt ?? context.now
+          updatedAt: context.now
         },
-        input.sentAt ?? context.now
+        context.now
       );
     }
 
     if (input.type === "jump") {
-      if (!activeMercenary.grounded || activeMercenary.jumpReadyAt > (input.sentAt ?? context.now)) {
+      if (!activeMercenary.grounded || activeMercenary.jumpReadyAt > context.now) {
         return state;
       }
 
@@ -3199,19 +3693,63 @@ export const chaosKommandoServerGame: ServerGame<
                     grounded: false,
                     vy: jumpVelocity,
                     vx: mercenary.vx + hopDirection * jumpForwardBoost,
-                    jumpReadyAt: (input.sentAt ?? context.now) + jumpCooldownMs,
+                    jumpReadyAt: context.now + jumpCooldownMs,
                     airborneFromY: mercenary.y
                   }
                 : mercenary
             )
           })),
-          updatedAt: input.sentAt ?? context.now
+          updatedAt: context.now
         },
-        input.sentAt ?? context.now
+        context.now
       );
     }
 
     if (input.type === "fire:start") {
+      // Der Seilzug liegt bewusst auf der Feuertaste: gedrueckt wirft er den
+      // Haken, erneut gedrueckt laesst er los. Er verbraucht den Schuss des
+      // Zuges nicht, sonst waere er als Fortbewegung wertlos.
+      if (state.turn.currentWeaponId === "seilzug") {
+        if (state.rope) {
+          return syncTurnPresentation({ ...state, rope: null, updatedAt: context.now }, context.now);
+        }
+
+        if ((activeMercenary.ammo.seilzug ?? 0) <= 0) {
+          return state;
+        }
+
+        const rope = castRope(state.terrain, activeMercenary);
+
+        if (!rope) {
+          return state;
+        }
+
+        return syncTurnPresentation(
+          {
+            ...state,
+            rope,
+            players: refreshPlayerSummaries(
+              state.players.map((entry) => ({
+                ...entry,
+                mercenaries: entry.mercenaries.map((mercenary) =>
+                  mercenary.id === activeMercenary.id
+                    ? {
+                        ...mercenary,
+                        ammo: {
+                          ...mercenary.ammo,
+                          seilzug: Math.max(0, (mercenary.ammo.seilzug ?? 0) - 1)
+                        }
+                      }
+                    : mercenary
+                )
+              }))
+            ),
+            updatedAt: context.now
+          },
+          context.now
+        );
+      }
+
       if (state.turn.hasFired || state.turn.resolvingShot) {
         return state;
       }
@@ -3223,7 +3761,7 @@ export const chaosKommandoServerGame: ServerGame<
       }
 
       if (definition.fireMode === "instant") {
-        return fireActiveWeapon(state, input.sentAt ?? context.now, 1);
+        return fireActiveWeapon(state, context.now, 1);
       }
 
       return syncTurnPresentation(
@@ -3231,11 +3769,11 @@ export const chaosKommandoServerGame: ServerGame<
           ...state,
           turn: {
             ...state.turn,
-            chargeStartedAt: input.sentAt ?? context.now
+            chargeStartedAt: context.now
           },
-          updatedAt: input.sentAt ?? context.now
+          updatedAt: context.now
         },
-        input.sentAt ?? context.now
+        context.now
       );
     }
 
@@ -3250,9 +3788,9 @@ export const chaosKommandoServerGame: ServerGame<
         return state;
       }
 
-      const chargeStartedAt = state.turn.chargeStartedAt ?? (input.sentAt ?? context.now) - 420;
-      const chargeRatio = clamp(((input.sentAt ?? context.now) - chargeStartedAt) / chargeWindowMs, 0.2, 1);
-      return fireActiveWeapon(state, input.sentAt ?? context.now, chargeRatio);
+      const chargeStartedAt = state.turn.chargeStartedAt ?? context.now - 420;
+      const chargeRatio = clamp((context.now - chargeStartedAt) / chargeWindowMs, 0.2, 1);
+      return fireActiveWeapon(state, context.now, chargeRatio);
     }
 
     return state;
@@ -3267,6 +3805,7 @@ export const chaosKommandoServerGame: ServerGame<
     nextState = applyMinePhysics(nextState, deltaMs, context.now);
     nextState = applyCratePhysics(nextState, deltaMs, context.now);
     nextState = resolveDeathSequences(nextState, context.now);
+    nextState = advanceBurst(nextState, context.now);
 
     for (const projectile of [...nextState.projectiles]) {
       if (!nextState.projectiles.some((entry) => entry.id === projectile.id)) {
@@ -3325,6 +3864,7 @@ export const chaosKommandoServerGame: ServerGame<
       players: buildPublicPlayers(state.players),
       turn: buildPublicTurn(state.turn),
       weapons: state.weapons,
+      rope: state.rope,
       projectiles: buildPublicProjectiles(state.projectiles),
       explosions: state.explosions,
       gravestones: buildPublicGravestones(state.gravestones),
