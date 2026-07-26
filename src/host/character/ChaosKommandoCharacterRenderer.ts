@@ -1,35 +1,51 @@
 import Phaser from "phaser";
-import type {
-  ChaosKommandoMercenaryState,
-  ChaosKommandoState,
-  ChaosKommandoWeaponId
-} from "../../protocol.js";
+import type { ChaosKommandoMercenaryState, ChaosKommandoState } from "../../protocol.js";
 import { toColorNumber } from "../ChaosKommandoViewModel.js";
 import {
   chaosKommandoCharacterTextureKeys,
+  chaosKommandoHeadbandTextureKey,
+  chaosKommandoTorsoTextureKey,
   chaosKommandoWeaponVisuals,
-  type ChaosKommandoGripPoint,
-  type ChaosKommandoWeaponVisual
+  type ChaosKommandoGripPoint
 } from "./ChaosKommandoCharacterAssets.js";
 import {
   createChaosKommandoCharacterMemory,
   resolveChaosKommandoCharacterPose,
+  CHAOS_KOMMANDO_JOY_DURATION_MS,
   type ChaosKommandoCharacterMemory,
-  type ChaosKommandoCharacterPose
+  type ChaosKommandoCharacterPose,
+  type MarshmallowHandPose
 } from "./ChaosKommandoCharacterAnimator.js";
+
+/**
+ * Ebenenreihenfolge aus `marshmallow-motion-handoff.json`:
+ * Fuesse, beim Walk der hintere Arm, Torso, Gesicht und Augen,
+ * Kopfbedeckung, vordere Haende, Waffen.
+ */
+const depths = {
+  shadow: 18,
+  activeMarker: 18.4,
+  rearFoot: 18.9,
+  frontFoot: 19.2,
+  rearHand: 19.5,
+  torso: 20,
+  face: 21,
+  headgear: 21.5,
+  frontHand: 22,
+  weapon: 23
+} as const;
 
 interface CharacterObjects {
   shadow: Phaser.GameObjects.Ellipse;
-  backpack: Phaser.GameObjects.Image;
-  rearFoot: Phaser.GameObjects.Image;
-  rearArm: Phaser.GameObjects.Image;
+  activeMarker: Phaser.GameObjects.Graphics;
+  leftFoot: Phaser.GameObjects.Image;
+  rightFoot: Phaser.GameObjects.Image;
   torso: Phaser.GameObjects.Image;
   face: Phaser.GameObjects.Graphics;
-  teamMarker: Phaser.GameObjects.Graphics;
+  headgear: Phaser.GameObjects.Image;
+  leftHand: Phaser.GameObjects.Image;
+  rightHand: Phaser.GameObjects.Image;
   weapon: Phaser.GameObjects.Image;
-  frontArm: Phaser.GameObjects.Image;
-  frontFoot: Phaser.GameObjects.Image;
-  helmet: Phaser.GameObjects.Image;
   memory: ChaosKommandoCharacterMemory;
 }
 
@@ -38,17 +54,14 @@ interface Point {
   y: number;
 }
 
-interface WeaponRig {
-  primaryGrip: Point;
-  secondaryGrip: Point | null;
-}
-
 export interface ChaosKommandoCharacterRenderState {
   characters: Map<string, CharacterObjects>;
+  /** Letzter bekannter Lebendstatus, um Todesfaelle als Ereignis zu erkennen. */
+  aliveById: Map<string, boolean>;
 }
 
 export function createChaosKommandoCharacterRenderState(): ChaosKommandoCharacterRenderState {
-  return { characters: new Map() };
+  return { characters: new Map(), aliveById: new Map() };
 }
 
 export function destroyChaosKommandoCharacterRenderState(
@@ -56,6 +69,7 @@ export function destroyChaosKommandoCharacterRenderState(
 ): void {
   for (const objects of renderState.characters.values()) destroyCharacterObjects(objects);
   renderState.characters.clear();
+  renderState.aliveById.clear();
 }
 
 export function hideChaosKommandoCharacters(renderState: ChaosKommandoCharacterRenderState): void {
@@ -70,68 +84,99 @@ export function syncChaosKommandoCharacters(
 ): void {
   const knownIds = new Set<string>();
   const gravestoneIds = new Set(state.gravestones.map((entry) => entry.mercenaryId));
+  const mournedPlayerIds = collectFreshCasualties(renderState, state);
+
   for (const player of state.players) {
+    const teamColor = toColorNumber(player.color, 0x38bdf8);
     for (const mercenary of player.mercenaries) {
       knownIds.add(mercenary.id);
       let objects = renderState.characters.get(mercenary.id);
       if (!objects) {
-        objects = createCharacterObjects(scene, mercenary, state, nowMs);
+        objects = createCharacterObjects(scene, mercenary, state, nowMs, teamColor);
         renderState.characters.set(mercenary.id, objects);
+      }
+      // Faellt ein Gegner, jubeln alle lebenden Soeldner der anderen Teams.
+      if (mercenary.alive && mournedPlayerIds.size > 0 && !mournedPlayerIds.has(mercenary.playerId)) {
+        objects.memory.joyUntilMs = nowMs + CHAOS_KOMMANDO_JOY_DURATION_MS;
       }
       if (!mercenary.alive && gravestoneIds.has(mercenary.id)) {
         setCharacterVisibility(objects, false);
         continue;
       }
       const isActive = mercenary.id === state.turn.activeMercenaryId;
-      const pose = resolveChaosKommandoCharacterPose({ mercenary, state, isActive, nowMs, memory: objects.memory });
-      syncCharacterObjects(objects, mercenary, state, pose, isActive, nowMs);
+      const pose = resolveChaosKommandoCharacterPose({
+        mercenary,
+        state,
+        isActive,
+        nowMs,
+        memory: objects.memory,
+        teamColor: toColorNumber(mercenary.teamColor, teamColor)
+      });
+      syncCharacterObjects(objects, mercenary, pose, isActive, nowMs, teamColor);
     }
   }
+
   for (const [id, objects] of renderState.characters) {
     if (knownIds.has(id)) continue;
     destroyCharacterObjects(objects);
     renderState.characters.delete(id);
+    renderState.aliveById.delete(id);
   }
+}
+
+/** Liefert die Spieler-IDs, die in diesem Frame einen Soeldner verloren haben. */
+function collectFreshCasualties(
+  renderState: ChaosKommandoCharacterRenderState,
+  state: ChaosKommandoState
+): Set<string> {
+  const mourned = new Set<string>();
+  for (const player of state.players) {
+    for (const mercenary of player.mercenaries) {
+      const wasAlive = renderState.aliveById.get(mercenary.id);
+      if (wasAlive === true && !mercenary.alive) {
+        mourned.add(mercenary.playerId);
+      }
+      renderState.aliveById.set(mercenary.id, mercenary.alive);
+    }
+  }
+  return mourned;
 }
 
 function createCharacterObjects(
   scene: Phaser.Scene,
   mercenary: ChaosKommandoMercenaryState,
   state: ChaosKommandoState,
-  nowMs: number
+  nowMs: number,
+  teamColor: number
 ): CharacterObjects {
+  const memory = createChaosKommandoCharacterMemory(mercenary, state, nowMs, teamColor);
   const image = (texture: string, depth: number): Phaser.GameObjects.Image =>
     scene.add.image(mercenary.x, mercenary.y, texture).setDepth(depth);
   return {
-    shadow: scene.add.ellipse(mercenary.x, mercenary.y, 48, 14, 0x020617, 0.22).setDepth(18),
-    backpack: image(chaosKommandoCharacterTextureKeys.backpack, 19),
-    rearFoot: image(chaosKommandoCharacterTextureKeys.foot, 19.1),
-    rearArm: image(chaosKommandoCharacterTextureKeys.arm, 19.5),
-    torso: image(chaosKommandoCharacterTextureKeys.torso, 20),
-    face: scene.add.graphics().setDepth(21),
-    teamMarker: scene.add.graphics().setDepth(21.2),
-    weapon: image(chaosKommandoWeaponVisuals[state.turn.currentWeaponId].textureKey, 22).setVisible(false),
-    frontArm: image(chaosKommandoCharacterTextureKeys.arm, 23),
-    frontFoot: image(chaosKommandoCharacterTextureKeys.foot, 20.5),
-    helmet: image(chaosKommandoCharacterTextureKeys.helmet, 24),
-    memory: createChaosKommandoCharacterMemory(mercenary, state, nowMs)
+    shadow: scene.add.ellipse(mercenary.x, mercenary.y, 48, 14, 0x020617, 0.22).setDepth(depths.shadow),
+    activeMarker: scene.add.graphics().setDepth(depths.activeMarker),
+    leftFoot: image(chaosKommandoCharacterTextureKeys.foot, depths.rearFoot),
+    rightFoot: image(chaosKommandoCharacterTextureKeys.foot, depths.frontFoot),
+    torso: image(chaosKommandoTorsoTextureKey(memory.torsoVariant), depths.torso),
+    face: scene.add.graphics().setDepth(depths.face),
+    headgear: image(chaosKommandoHeadbandTextureKey(memory.headbandVariant), depths.headgear),
+    leftHand: image(chaosKommandoCharacterTextureKeys.hand, depths.frontHand),
+    rightHand: image(chaosKommandoCharacterTextureKeys.hand, depths.frontHand),
+    weapon: image(chaosKommandoWeaponVisuals[state.turn.currentWeaponId].textureKey, depths.weapon).setVisible(false),
+    memory
   };
 }
 
 function syncCharacterObjects(
   objects: CharacterObjects,
   mercenary: ChaosKommandoMercenaryState,
-  state: ChaosKommandoState,
   pose: ChaosKommandoCharacterPose,
   isActive: boolean,
-  nowMs: number
+  nowMs: number,
+  teamColor: number
 ): void {
   const radius = Math.max(14, mercenary.radius);
-  const direction = mercenary.facing === "right" ? 1 : -1;
   const groundY = mercenary.y + radius * 1.02;
-  const bodyX = mercenary.x;
-  const bodyY = groundY - radius * 1.62 + pose.bodyOffsetYInRadii * radius;
-  const alpha = mercenary.alive ? 1 : 0.72;
   setCharacterVisibility(objects, true);
 
   objects.shadow
@@ -139,385 +184,314 @@ function syncCharacterObjects(
     .setSize(radius * (mercenary.grounded ? 2.3 : 1.45), radius * 0.5)
     .setAlpha(mercenary.alive ? (mercenary.grounded ? 0.22 : 0.09) : 0.08);
 
-  syncFeet(objects, bodyX, groundY, radius, direction, pose, alpha);
-  objects.backpack
-    .setPosition(bodyX - direction * radius * 0.72, bodyY - radius * 0.02)
-    .setDisplaySize(radius * 2.05, radius * 2.05)
-    .setFlipX(direction < 0)
-    .setRotation(pose.bodyRotationRad - direction * 0.04)
-    .setAlpha(alpha * 0.98)
-    .setVisible(mercenary.alive);
+  syncActiveMarker(objects.activeMarker, mercenary, isActive, groundY, radius, teamColor, nowMs);
+  syncFeet(objects, pose);
+  syncTorso(objects.torso, pose, mercenary);
+  syncFace(objects.face, pose);
+  syncHeadgear(objects.headgear, pose);
 
-  objects.torso
-    .setPosition(bodyX, bodyY)
-    .setDisplaySize(radius * 3.2 * pose.bodyScaleX, radius * 3.2 * pose.bodyScaleY)
-    .setRotation(pose.bodyRotationRad)
-    .setAlpha(alpha)
-    .clearTint();
-
-  const lowHealth = mercenary.hp / Math.max(1, mercenary.maxHp) < 0.25 && mercenary.alive;
-  if (lowHealth) objects.torso.setTint(0xffe4d6);
-
-  const weaponRig = syncWeapon(objects.weapon, mercenary, state, pose, bodyX, bodyY, radius, alpha);
-  syncArms(objects, mercenary, pose, weaponRig, bodyX, bodyY, radius, direction, alpha, lowHealth);
-  syncFace(objects.face, mercenary, pose, bodyX, bodyY, radius, direction, alpha, isActive);
-  syncTeamMarker(objects.teamMarker, mercenary, bodyX, bodyY, radius, direction, alpha, isActive, nowMs);
-  syncHelmet(objects.helmet, mercenary, pose, bodyX, bodyY, radius, direction, alpha);
+  const weaponPull = syncWeapon(objects.weapon, pose, mercenary);
+  syncHands(objects, pose, weaponPull);
 }
 
-function syncFeet(
-  objects: CharacterObjects,
-  bodyX: number,
-  groundY: number,
-  radius: number,
-  direction: number,
-  pose: ChaosKommandoCharacterPose,
-  alpha: number
-): void {
-  const rearX = bodyX - direction * radius * 0.36 + direction * pose.stride * radius * 0.34;
-  const frontX = bodyX + direction * radius * 0.36 - direction * pose.stride * radius * 0.34;
-  const baseY = groundY - radius * 0.58;
-  syncFoot(objects.rearFoot, rearX, baseY - pose.rearStepLift * radius * 0.22, radius, direction, pose.stride * 0.13, alpha * 0.94);
-  syncFoot(objects.frontFoot, frontX, baseY - pose.frontStepLift * radius * 0.22, radius, direction, -pose.stride * 0.13, alpha);
+function syncFeet(objects: CharacterObjects, pose: ChaosKommandoCharacterPose): void {
+  objects.leftFoot.setDepth(pose.leftFootInFront ? depths.frontFoot : depths.rearFoot);
+  objects.rightFoot.setDepth(pose.leftFootInFront ? depths.rearFoot : depths.frontFoot);
+  syncFoot(objects.leftFoot, pose, pose.leftFoot);
+  syncFoot(objects.rightFoot, pose, pose.rightFoot);
 }
 
 function syncFoot(
   foot: Phaser.GameObjects.Image,
-  x: number,
-  y: number,
-  radius: number,
-  direction: number,
-  rotation: number,
-  alpha: number
+  pose: ChaosKommandoCharacterPose,
+  placement: { x: number; y: number; rotation: number }
 ): void {
   foot
-    .setPosition(x, y)
-    .setOrigin(0.36, 0.15)
-    .setDisplaySize(radius * 1.25, radius * 1.25)
-    .setFlipX(direction < 0)
-    .setRotation(direction * rotation)
-    .setAlpha(alpha);
+    .setPosition(placement.x, placement.y)
+    .setOrigin(0.5, 0.5)
+    .setDisplaySize(pose.footWidth, pose.footHeight)
+    .setRotation(placement.rotation)
+    .setAlpha(pose.alpha);
 }
 
-function syncArms(
-  objects: CharacterObjects,
-  mercenary: ChaosKommandoMercenaryState,
-  pose: ChaosKommandoCharacterPose,
-  weaponRig: WeaponRig | null,
-  bodyX: number,
-  bodyY: number,
-  radius: number,
-  direction: number,
-  alpha: number,
-  lowHealth: boolean
-): void {
-  const rearShoulder = rotateAround(
-    { x: bodyX - direction * radius * 0.66, y: bodyY - radius * 0.32 },
-    { x: bodyX, y: bodyY },
-    pose.bodyRotationRad
-  );
-  const frontShoulder = rotateAround(
-    { x: bodyX + direction * radius * 0.65, y: bodyY - radius * 0.25 },
-    { x: bodyX, y: bodyY },
-    pose.bodyRotationRad
-  );
-  const relaxedAngle = direction > 0 ? 1.18 : Math.PI - 1.18;
-  const rearTarget = pointAt(rearShoulder, relaxedAngle - direction * pose.armSwingRad, radius * 0.9);
-  const frontTarget = pointAt(frontShoulder, relaxedAngle + direction * pose.armSwingRad, radius * 0.88);
-
-  if (weaponRig) {
-    if (weaponRig.secondaryGrip) {
-      syncArm(objects.rearArm, rearShoulder, weaponRig.primaryGrip, radius, alpha * 0.96, lowHealth);
-      syncArm(objects.frontArm, frontShoulder, weaponRig.secondaryGrip, radius, alpha, lowHealth);
-    } else {
-      syncArm(objects.rearArm, rearShoulder, rearTarget, radius, alpha * 0.96, lowHealth);
-      syncArm(objects.frontArm, frontShoulder, weaponRig.primaryGrip, radius, alpha, lowHealth);
-    }
-  } else {
-    syncArm(objects.rearArm, rearShoulder, rearTarget, radius, alpha * 0.96, lowHealth);
-    syncArm(objects.frontArm, frontShoulder, frontTarget, radius, alpha, lowHealth);
-  }
+/**
+ * Der Warp besteht aus gegenphasiger X/Y-Skalierung plus leichter X-Scherung.
+ * Phaser kennt keine Scherung; bei Betraegen unter 0.007 rad ist die Rotation
+ * um `-shearX` visuell deckungsgleich.
+ */
+function warpRotation(pose: ChaosKommandoCharacterPose): number {
+  return -pose.shearX;
 }
 
-function syncArm(
-  arm: Phaser.GameObjects.Image,
-  shoulder: Point,
-  hand: Point,
-  radius: number,
-  alpha: number,
-  lowHealth: boolean
-): void {
-  const distance = Math.hypot(hand.x - shoulder.x, hand.y - shoulder.y);
-  const displayWidth = Phaser.Math.Clamp(distance / 0.92, radius * 0.72, radius * 1.72);
-  arm
-    .setPosition(shoulder.x, shoulder.y)
-    .setOrigin(0.035, 0.5)
-    .setDisplaySize(displayWidth, displayWidth * 0.5)
-    .setRotation(Math.atan2(hand.y - shoulder.y, hand.x - shoulder.x))
-    .setFlipX(false)
-    .setFlipY(false)
-    .setAlpha(alpha)
-    .clearTint();
-  if (lowHealth) arm.setTint(0xffe4d6);
-}
-
-function syncWeapon(
-  weapon: Phaser.GameObjects.Image,
-  mercenary: ChaosKommandoMercenaryState,
-  state: ChaosKommandoState,
-  pose: ChaosKommandoCharacterPose,
-  bodyX: number,
-  bodyY: number,
-  radius: number,
-  alpha: number
-): WeaponRig | null {
-  const weaponId = resolveDisplayedWeaponId(state, pose);
-  if (!weaponId || !mercenary.alive) {
-    weapon.setVisible(false);
-    return null;
-  }
-  const visual = chaosKommandoWeaponVisuals[weaponId];
-  const transform = resolveWeaponAnchor(mercenary, pose, visual, bodyX, bodyY, radius);
-  const displaySize = radius * visual.sizeInRadii;
-  const rotation = transform.angle + visual.rotationOffsetRad;
-  weapon
-    .setVisible(true)
-    .setTexture(visual.textureKey)
-    .setPosition(transform.grip.x, transform.grip.y)
-    .setDisplaySize(displaySize, displaySize)
-    .setOrigin(visual.primaryGrip.x, visual.primaryGrip.y)
-    .setRotation(rotation)
-    .setFlipX(false)
-    .setFlipY(transform.flipY)
-    .setAlpha(alpha);
-
+/** Bildet einen lokalen Rig-Punkt ueber die Warp-Matrix in den Weltraum ab. */
+function warpToWorld(pose: ChaosKommandoCharacterPose, localX: number, localY: number): Point {
   return {
-    primaryGrip: transform.grip,
-    secondaryGrip: visual.secondaryGrip
-      ? transformGripPoint(visual.primaryGrip, visual.secondaryGrip, transform.grip, displaySize, rotation, transform.flipY)
-      : null
+    x: pose.bodyX + pose.scaleX * localX + pose.shearX * localY,
+    y: pose.bodyBottom + pose.scaleY * localY
   };
 }
 
-function resolveDisplayedWeaponId(
-  state: ChaosKommandoState,
-  pose: ChaosKommandoCharacterPose
-): ChaosKommandoWeaponId | null {
-  return pose.showWeapon ? state.turn.currentWeaponId : null;
+function syncTorso(
+  torso: Phaser.GameObjects.Image,
+  pose: ChaosKommandoCharacterPose,
+  mercenary: ChaosKommandoMercenaryState
+): void {
+  const lowHealth = mercenary.hp / Math.max(1, mercenary.maxHp) < 0.25 && mercenary.alive;
+  torso
+    .setTexture(chaosKommandoTorsoTextureKey(pose.torsoVariant))
+    .setPosition(pose.bodyX, pose.bodyBottom)
+    .setOrigin(0.5, 1)
+    .setDisplaySize(pose.torsoWidth * pose.scaleX, pose.torsoHeight * pose.scaleY)
+    .setRotation(warpRotation(pose))
+    .setAlpha(pose.alpha)
+    .clearTint();
+  if (lowHealth) torso.setTint(0xffe4d6);
 }
 
-function resolveWeaponAnchor(
-  mercenary: ChaosKommandoMercenaryState,
-  pose: ChaosKommandoCharacterPose,
-  visual: ChaosKommandoWeaponVisual,
-  bodyX: number,
-  bodyY: number,
-  radius: number
-): { grip: Point; angle: number; flipY: boolean } {
-  const direction = mercenary.facing === "right" ? 1 : -1;
-  let angle = mercenary.aimAngleRad + pose.weaponAngleOffsetRad;
-  let grip = { x: bodyX + direction * radius * 0.23, y: bodyY + radius * 0.22 };
-
-  if (visual.handling === "pistol") {
-    grip = { x: bodyX + direction * radius * 0.48, y: bodyY + radius * 0.2 };
-  } else if (visual.handling === "melee") {
-    const striking = pose.weaponKickInRadii > 0.02;
-    angle = direction > 0 ? (striking ? 0.45 : -0.92) : Math.PI - (striking ? 0.45 : -0.92);
-    grip = { x: bodyX + direction * radius * 0.42, y: bodyY + radius * 0.12 };
-  } else if (visual.handling === "throwable") {
-    angle = direction > 0 ? -0.92 : Math.PI + 0.92;
-    grip = { x: bodyX + direction * radius * 0.72, y: bodyY - radius * 0.72 };
-  } else if (visual.handling === "placeable") {
-    angle = 0;
-    grip = { x: bodyX + direction * radius * 0.62, y: bodyY + radius * 0.75 };
-  } else if (visual.handling === "remote") {
-    angle = 0;
-    grip = { x: bodyX + direction * radius * 0.72, y: bodyY + radius * 0.24 };
+function syncHeadgear(headgear: Phaser.GameObjects.Image, pose: ChaosKommandoCharacterPose): void {
+  const placement = pose.headgear;
+  if (!placement) {
+    headgear.setVisible(false);
+    return;
   }
+  const textureKey =
+    placement.kind === "helmet"
+      ? chaosKommandoCharacterTextureKeys.helmet
+      : chaosKommandoHeadbandTextureKey(placement.headbandVariant);
+  const anchor = warpToWorld(pose, placement.localX, placement.localY);
+  headgear
+    .setVisible(true)
+    .setTexture(textureKey)
+    .setPosition(anchor.x, anchor.y)
+    .setOrigin(0, 0)
+    .setDisplaySize(placement.width * pose.scaleX, placement.height * pose.scaleY)
+    .setRotation(warpRotation(pose))
+    .setAlpha(pose.alpha);
+}
 
-  grip.x -= Math.cos(angle) * pose.weaponKickInRadii * radius;
-  grip.y -= Math.sin(angle) * pose.weaponKickInRadii * radius;
-  return { grip, angle, flipY: Math.cos(angle) < 0 };
+function syncHands(
+  objects: CharacterObjects,
+  pose: ChaosKommandoCharacterPose,
+  weaponPull: Point | null
+): void {
+  const left = pose.leftHand;
+  const right = pose.rightHand;
+  // Beim Walk liegt genau eine Hand hinter dem Torso, sonst beide davor.
+  objects.leftHand.setDepth(pose.handBehindSide === -1 ? depths.rearHand : depths.frontHand);
+  objects.rightHand.setDepth(pose.handBehindSide === 1 ? depths.rearHand : depths.frontHand);
+
+  const facesLeft = pose.aim.ux < 0;
+  const pulledHand = facesLeft ? "left" : "right";
+  syncHand(objects.leftHand, left, pose.alpha, weaponPull && pulledHand === "left" ? weaponPull : null);
+  syncHand(objects.rightHand, right, pose.alpha, weaponPull && pulledHand === "right" ? weaponPull : null);
+}
+
+function syncHand(
+  image: Phaser.GameObjects.Image,
+  placement: MarshmallowHandPose,
+  alpha: number,
+  override: Point | null
+): void {
+  image
+    .setPosition(override?.x ?? placement.x, override?.y ?? placement.y)
+    .setOrigin(0.5, 0.5)
+    .setDisplaySize(placement.width, placement.height)
+    .setRotation(placement.rotation)
+    .setAlpha(alpha * placement.alpha);
+}
+
+/**
+ * Zeichnet die Waffe und liefert bei Zweihandwaffen den Weltpunkt des
+ * Sekundaergriffs, damit die vordere Hand exakt daran haengt.
+ */
+function syncWeapon(
+  weapon: Phaser.GameObjects.Image,
+  pose: ChaosKommandoCharacterPose,
+  mercenary: ChaosKommandoMercenaryState
+): Point | null {
+  const placement = pose.weapon;
+  if (!placement || !mercenary.alive) {
+    weapon.setVisible(false);
+    return null;
+  }
+  const visual = chaosKommandoWeaponVisuals[placement.weaponId];
+  // Die Arsenal-Grafiken sind nicht quadratisch; die Hoehe folgt dem Seitenverhaeltnis.
+  const displayWidth = placement.displaySize;
+  const displayHeight = displayWidth / visual.aspect;
+  weapon
+    .setVisible(true)
+    .setTexture(visual.textureKey)
+    .setPosition(placement.gripX, placement.gripY)
+    .setDisplaySize(displayWidth, displayHeight)
+    .setOrigin(
+      placement.facesLeft ? 1 - visual.primaryGrip.x : visual.primaryGrip.x,
+      visual.primaryGrip.y
+    )
+    .setRotation(placement.angle)
+    .setFlipX(placement.facesLeft)
+    .setFlipY(false)
+    .setAlpha(pose.alpha);
+
+  if (placement.posture !== "two-hand" || !visual.secondaryGrip) return null;
+  return transformGripPoint(
+    visual.primaryGrip,
+    visual.secondaryGrip,
+    { x: placement.gripX, y: placement.gripY },
+    displayWidth,
+    displayHeight,
+    placement.angle,
+    placement.facesLeft
+  );
 }
 
 function transformGripPoint(
   primary: ChaosKommandoGripPoint,
   target: ChaosKommandoGripPoint,
   worldPrimary: Point,
-  displaySize: number,
+  displayWidth: number,
+  displayHeight: number,
   rotation: number,
-  flipY: boolean
+  facesLeft: boolean
 ): Point {
-  const localX = (target.x - primary.x) * displaySize;
-  const localY = (target.y - primary.y) * displaySize * (flipY ? -1 : 1);
+  const localX = (target.x - primary.x) * displayWidth * (facesLeft ? -1 : 1);
+  const localY = (target.y - primary.y) * displayHeight;
   return {
     x: worldPrimary.x + localX * Math.cos(rotation) - localY * Math.sin(rotation),
     y: worldPrimary.y + localX * Math.sin(rotation) + localY * Math.cos(rotation)
   };
 }
 
-function syncFace(
-  face: Phaser.GameObjects.Graphics,
-  mercenary: ChaosKommandoMercenaryState,
-  pose: ChaosKommandoCharacterPose,
-  bodyX: number,
-  bodyY: number,
-  radius: number,
-  direction: number,
-  alpha: number,
-  isActive: boolean
-): void {
-  face.clear().setPosition(bodyX, bodyY).setRotation(pose.bodyRotationRad).setAlpha(alpha);
-  const eyeY = -radius * 0.28;
-  const eyeX = radius * 0.37;
-  const eyeWidth = radius * 0.25;
-  const eyeHeight = radius * 0.46 * pose.eyeOpenRatio;
-  const gazeX = (isActive ? Math.cos(mercenary.aimAngleRad) : direction * 0.35) * radius * 0.075;
-  const gazeY = (isActive ? Math.sin(mercenary.aimAngleRad) : 0) * radius * 0.06;
+/* ------------------------------------------------------------------ */
+/* Gesicht                                                             */
+/* ------------------------------------------------------------------ */
 
-  face.fillStyle(0x3b241b, 0.98);
+function syncFace(face: Phaser.GameObjects.Graphics, pose: ChaosKommandoCharacterPose): void {
+  const { faceScale, eyeCenterY, eyeGap, targetLocalX, targetLocalY, blink } = pose.face;
+  face
+    .clear()
+    .setPosition(pose.bodyX, pose.bodyBottom)
+    .setScale(pose.scaleX, pose.scaleY)
+    .setRotation(warpRotation(pose))
+    .setAlpha(pose.alpha);
+
   if (pose.expression === "defeated") {
-    face.lineStyle(Math.max(2, radius * 0.1), 0x3b241b, 0.98);
-    for (const x of [-eyeX, eyeX]) {
-      face.lineBetween(x - eyeWidth * 0.45, eyeY - eyeWidth * 0.45, x + eyeWidth * 0.45, eyeY + eyeWidth * 0.45);
-      face.lineBetween(x + eyeWidth * 0.45, eyeY - eyeWidth * 0.45, x - eyeWidth * 0.45, eyeY + eyeWidth * 0.45);
+    face.lineStyle(Math.max(1.2, 3.4 * faceScale), 0x532d1f, 0.92);
+    for (const direction of [-1, 1]) {
+      const eyeX = direction * eyeGap;
+      const arm = 15 * faceScale;
+      face.lineBetween(eyeX - arm, eyeCenterY - arm, eyeX + arm, eyeCenterY + arm);
+      face.lineBetween(eyeX + arm, eyeCenterY - arm, eyeX - arm, eyeCenterY + arm);
     }
-  } else {
-    face.fillEllipse(-eyeX + gazeX, eyeY + gazeY, eyeWidth, Math.max(radius * 0.045, eyeHeight));
-    face.fillEllipse(eyeX + gazeX, eyeY + gazeY, eyeWidth, Math.max(radius * 0.045, eyeHeight));
-    if (pose.eyeOpenRatio > 0.35) {
-      face.fillStyle(0xffffff, 0.94);
-      const glintRadius = radius * 0.055;
-      face.fillCircle(-eyeX + gazeX - radius * 0.04, eyeY + gazeY - radius * 0.07, glintRadius);
-      face.fillCircle(eyeX + gazeX - radius * 0.04, eyeY + gazeY - radius * 0.07, glintRadius);
+    drawMouth(face, pose, faceScale, eyeCenterY);
+    return;
+  }
+
+  for (const direction of [-1, 1]) {
+    const eyeX = direction * eyeGap;
+    const dx = targetLocalX - eyeX;
+    const dy = targetLocalY - eyeCenterY;
+    const length = Math.max(1, Math.hypot(dx, dy));
+    const gazeX = (dx / length) * 11 * faceScale;
+    const gazeY = (dy / length) * 8 * faceScale;
+
+    face.fillStyle(0xfffae1, 0.94);
+    face.lineStyle(Math.max(1, 3 * faceScale), 0x532d1f, 0.9);
+    const eyeHeight = Math.max(2, 54 * faceScale * blink);
+    face.fillEllipse(eyeX, eyeCenterY, 44 * faceScale, eyeHeight);
+    face.strokeEllipse(eyeX, eyeCenterY, 44 * faceScale, eyeHeight);
+
+    if (blink > 0.26) {
+      face.fillStyle(0x382119, 1);
+      face.fillEllipse(eyeX + gazeX, eyeCenterY + gazeY, 20 * faceScale, 30 * faceScale);
+      face.fillStyle(0xffffff, 0.96);
+      face.fillCircle(
+        eyeX + gazeX - 3 * faceScale,
+        eyeCenterY + gazeY - 5 * faceScale,
+        3.2 * faceScale
+      );
     }
   }
 
-  face.fillStyle(0xfb7185, pose.expression === "hurt" ? 0.58 : 0.38);
-  face.fillCircle(-radius * 0.65, radius * 0.13, radius * 0.17);
-  face.fillCircle(radius * 0.65, radius * 0.13, radius * 0.17);
-  drawMouth(face, pose, radius);
+  drawMouth(face, pose, faceScale, eyeCenterY);
 }
 
 function drawMouth(
   face: Phaser.GameObjects.Graphics,
   pose: ChaosKommandoCharacterPose,
-  radius: number
+  faceScale: number,
+  eyeCenterY: number
 ): void {
-  face.lineStyle(Math.max(2, radius * 0.085), 0x5b2f25, 0.95);
+  const mouthY = eyeCenterY + 30 * faceScale;
   if (pose.expression === "hurt") {
     face.fillStyle(0x5b2f25, 0.94);
-    face.fillEllipse(0, radius * 0.3, radius * 0.3, radius * 0.38);
+    face.fillEllipse(0, mouthY + 4 * faceScale, 26 * faceScale, 32 * faceScale);
     return;
   }
+
+  face.lineStyle(Math.max(1, 3.2 * faceScale), 0x633528, 0.95);
   face.beginPath();
   if (pose.expression === "happy") {
-    face.arc(0, radius * 0.13, radius * 0.34, 0.12, Math.PI - 0.12, false);
+    face.arc(0, mouthY - 4 * faceScale, 32 * faceScale, 0.12, Math.PI - 0.12, false);
   } else if (pose.expression === "defeated") {
-    face.arc(0, radius * 0.47, radius * 0.3, Math.PI + 0.18, Math.PI * 2 - 0.18, false);
+    face.arc(0, mouthY + 22 * faceScale, 26 * faceScale, Math.PI + 0.2, Math.PI * 2 - 0.2, false);
   } else if (pose.expression === "focus") {
-    face.moveTo(-radius * 0.18, radius * 0.27);
-    face.lineTo(radius * 0.18, radius * 0.27);
+    face.moveTo(-16 * faceScale, mouthY);
+    face.lineTo(16 * faceScale, mouthY);
   } else {
-    face.arc(0, radius * 0.12, radius * 0.25, 0.18, Math.PI - 0.18, false);
+    face.arc(0, mouthY, 24 * faceScale, 0.2, Math.PI - 0.2, false);
   }
   face.strokePath();
 }
 
-function syncHelmet(
-  helmet: Phaser.GameObjects.Image,
-  mercenary: ChaosKommandoMercenaryState,
-  pose: ChaosKommandoCharacterPose,
-  bodyX: number,
-  bodyY: number,
-  radius: number,
-  direction: number,
-  alpha: number
-): void {
-  if (!mercenary.alive || pose.expression === "defeated") {
-    helmet.setVisible(false);
-    return;
-  }
-  const anchor = rotateAround(
-    { x: bodyX, y: bodyY - radius * 1.25 },
-    { x: bodyX, y: bodyY },
-    pose.bodyRotationRad
-  );
-  helmet
-    .setVisible(true)
-    .setPosition(anchor.x, anchor.y)
-    .setDisplaySize(radius * 3.05, radius * 2.02)
-    .setFlipX(direction < 0)
-    .setRotation(pose.bodyRotationRad - direction * 0.025)
-    .setAlpha(alpha);
-}
+/* ------------------------------------------------------------------ */
+/* Aktiv-Markierung                                                    */
+/* ------------------------------------------------------------------ */
 
-function syncTeamMarker(
+function syncActiveMarker(
   marker: Phaser.GameObjects.Graphics,
   mercenary: ChaosKommandoMercenaryState,
-  bodyX: number,
-  bodyY: number,
-  radius: number,
-  direction: number,
-  alpha: number,
   isActive: boolean,
+  groundY: number,
+  radius: number,
+  teamColor: number,
   nowMs: number
 ): void {
   marker.clear();
-  if (!mercenary.alive) return;
-  const color = toColorNumber(mercenary.teamColor, 0x38bdf8);
-  const flutter = Math.sin(nowMs / 180 + mercenary.x * 0.02) * radius * 0.055;
-  const knotX = bodyX - direction * radius * 0.77;
-  const knotY = bodyY + radius * 0.08;
-  marker.fillStyle(color, alpha);
-  marker.fillCircle(knotX, knotY, radius * (isActive ? 0.24 : 0.2));
-  marker.fillTriangle(
-    knotX,
-    knotY,
-    knotX - direction * radius * 0.62,
-    knotY - radius * 0.17 + flutter,
-    knotX - direction * radius * 0.5,
-    knotY + radius * 0.27 + flutter
-  );
+  if (!isActive || !mercenary.alive) return;
+  const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.005);
+  marker.lineStyle(Math.max(1.5, radius * 0.11), teamColor, 0.35 + pulse * 0.4);
+  marker.strokeEllipse(mercenary.x, groundY + radius * 0.06, radius * (2.5 + pulse * 0.22), radius * 0.72);
 }
 
-function pointAt(origin: Point, angle: number, distance: number): Point {
-  return { x: origin.x + Math.cos(angle) * distance, y: origin.y + Math.sin(angle) * distance };
-}
-
-function rotateAround(point: Point, origin: Point, rotation: number): Point {
-  const x = point.x - origin.x;
-  const y = point.y - origin.y;
-  return {
-    x: origin.x + x * Math.cos(rotation) - y * Math.sin(rotation),
-    y: origin.y + x * Math.sin(rotation) + y * Math.cos(rotation)
-  };
-}
+/* ------------------------------------------------------------------ */
+/* Lebenszyklus                                                        */
+/* ------------------------------------------------------------------ */
 
 function setCharacterVisibility(objects: CharacterObjects, visible: boolean): void {
   objects.shadow.setVisible(visible);
-  objects.backpack.setVisible(visible);
-  objects.rearFoot.setVisible(visible);
-  objects.rearArm.setVisible(visible);
+  objects.activeMarker.setVisible(visible);
+  objects.leftFoot.setVisible(visible);
+  objects.rightFoot.setVisible(visible);
   objects.torso.setVisible(visible);
   objects.face.setVisible(visible);
-  objects.teamMarker.setVisible(visible);
-  objects.frontArm.setVisible(visible);
-  objects.frontFoot.setVisible(visible);
-  objects.helmet.setVisible(visible);
-  if (!visible) objects.weapon.setVisible(false);
+  objects.headgear.setVisible(visible);
+  objects.leftHand.setVisible(visible);
+  objects.rightHand.setVisible(visible);
+  if (!visible) {
+    objects.weapon.setVisible(false);
+    objects.activeMarker.clear();
+  }
 }
 
 function destroyCharacterObjects(objects: CharacterObjects): void {
   objects.shadow.destroy();
-  objects.backpack.destroy();
-  objects.rearFoot.destroy();
-  objects.rearArm.destroy();
+  objects.activeMarker.destroy();
+  objects.leftFoot.destroy();
+  objects.rightFoot.destroy();
   objects.torso.destroy();
   objects.face.destroy();
-  objects.teamMarker.destroy();
+  objects.headgear.destroy();
+  objects.leftHand.destroy();
+  objects.rightHand.destroy();
   objects.weapon.destroy();
-  objects.frontArm.destroy();
-  objects.frontFoot.destroy();
-  objects.helmet.destroy();
 }
