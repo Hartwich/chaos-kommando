@@ -23,6 +23,7 @@ import {
   syncChaosKommandoCharacters,
   type ChaosKommandoCharacterRenderState
 } from "./character/ChaosKommandoCharacterRenderer.js";
+import { tokens } from "./platformTheme.js";
 
 const idleWorld = {
   width: 1_680,
@@ -1973,7 +1974,7 @@ function syncNameLabels(
             fontFamily: '"Nunito Sans", "Arial", sans-serif',
             fontSize: "13px",
             fontStyle: "bold",
-            color: "#f8fafc",
+            color: tokens().color.text,
             backgroundColor: "rgba(2, 6, 23, 0.72)"
           })
           .setOrigin(0.5, 1)
@@ -1985,7 +1986,7 @@ function syncNameLabels(
       label
         .setVisible(true)
         .setText(mercenary.name)
-        .setColor(mercenary.teamColor || "#f8fafc")
+        .setColor(mercenary.teamColor || tokens().color.text)
         .setPosition(mercenary.x, mercenary.y - mercenary.radius * 3.65);
     }
   }

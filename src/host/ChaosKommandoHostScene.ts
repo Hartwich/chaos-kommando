@@ -11,6 +11,8 @@ import {
   snapChaosKommandoCamera,
   type ChaosKommandoRenderState
 } from "./ChaosKommandoRenderer.js";
+import { renderRoundScreens } from "./roundScreens.js";
+import { tokens } from "./platformTheme.js";
 
 const hostTheme = {
   titleFont: '"Oxanium", "Arial", sans-serif',
@@ -47,14 +49,14 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
   create(): void {
     const client = this.registry.get("hostClient") as HostClientLike;
 
-    this.cameras.main.setBackgroundColor("#04111f");
+    this.cameras.main.setBackgroundColor(tokens().color.background);
     this.renderState = createChaosKommandoRenderState(this);
     this.headerText = this.add
       .text(34, 24, "", {
         fontFamily: hostTheme.titleFont,
         fontSize: "40px",
-        color: "#f8fafc",
-        stroke: "#0f172a",
+        color: tokens().color.text,
+        stroke: tokens().color.surface,
         strokeThickness: 5
       })
       .setDepth(40)
@@ -64,7 +66,7 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
         fontFamily: hostTheme.titleFont,
         fontSize: "44px",
         color: "#fde68a",
-        stroke: "#0f172a",
+        stroke: tokens().color.surface,
         strokeThickness: 5,
         wordWrap: { width: Math.max(320, this.scale.width - 68) },
         lineSpacing: 5
@@ -76,8 +78,8 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
       .text(this.scale.width / 2, this.scale.height * 0.34, "", {
         fontFamily: hostTheme.titleFont,
         fontSize: "58px",
-        color: "#f8fafc",
-        stroke: "#0f172a",
+        color: tokens().color.text,
+        stroke: tokens().color.surface,
         strokeThickness: 8,
         align: "center"
       })
@@ -89,6 +91,11 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
 
     this.unsubscribe = client.subscribe((state) => {
+      // Intro and result screens belong to this game, not the platform.
+      if (renderRoundScreens(this, state)) {
+        return;
+      }
+
       const previousGameState = this.latestGameState;
       this.latestGameState = (state.game?.state ?? null) as ChaosKommandoState | null;
 

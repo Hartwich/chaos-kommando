@@ -17,7 +17,13 @@ export const chaosKommandoManifest = {
     countdownMs: 2_200,
     resultMs: 5_200,
     scoreboardMs: 5_000
-  }
+  },
+
+  ownsScreens: ["round_intro", "result"],
+  visual: { accent: "#c4622c", eyebrow: "Artillery" },
+  audio: { track: { profile: "battle", bpm: 116, rootMidi: 46, masterGain: 0.15 } },
+  controllerChrome: { minimal: true },
+  broadcast: { controllerStateIntervalMs: 100 },
 } as const satisfies GameManifest;
 
 export const manifest = chaosKommandoManifest;
