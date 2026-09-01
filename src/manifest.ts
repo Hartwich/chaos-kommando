@@ -20,7 +20,7 @@ export const chaosKommandoManifest = {
   },
 
   ownsScreens: ["round_intro", "result"],
-  visual: { accent: "#c4622c", eyebrow: "Artillery" },
+  visual: { accent: "#c4622c", icon: "cannon", eyebrow: "Artillery" },
   audio: { track: { profile: "battle", bpm: 116, rootMidi: 46, masterGain: 0.15 } },
   controllerChrome: { minimal: true },
   broadcast: { controllerStateIntervalMs: 100 },
