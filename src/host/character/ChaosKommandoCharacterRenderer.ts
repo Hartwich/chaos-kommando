@@ -192,6 +192,18 @@ function syncCharacterObjects(
 
   const weaponPull = syncWeapon(objects.weapon, pose, mercenary);
   syncHands(objects, pose, weaponPull);
+  // Rotate the complete rig around the physics body: limbs and face share the salto.
+  if (pose.bodyRotation !== 0) {
+    const angle = pose.bodyRotation;
+    const cx = mercenary.x;
+    const cy = mercenary.y - mercenary.radius * 0.4;
+    for (const part of [objects.torso, objects.face, objects.headgear, objects.leftFoot,
+      objects.rightFoot, objects.leftHand, objects.rightHand, objects.weapon]) {
+      const dx = part.x - cx; const dy = part.y - cy;
+      part.setPosition(cx + dx * Math.cos(angle) - dy * Math.sin(angle), cy + dx * Math.sin(angle) + dy * Math.cos(angle));
+      part.setRotation(part.rotation + angle);
+    }
+  }
 }
 
 function syncFeet(objects: CharacterObjects, pose: ChaosKommandoCharacterPose): void {
@@ -382,6 +394,7 @@ function syncFace(face: Phaser.GameObjects.Graphics, pose: ChaosKommandoCharacte
       face.lineBetween(eyeX - arm, eyeCenterY - arm, eyeX + arm, eyeCenterY + arm);
       face.lineBetween(eyeX + arm, eyeCenterY - arm, eyeX - arm, eyeCenterY + arm);
     }
+
     drawMouth(face, pose, faceScale, eyeCenterY);
     return;
   }

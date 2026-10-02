@@ -46,6 +46,7 @@ export interface ChaosKommandoAimInput extends PlayerInput {
 
 export interface ChaosKommandoJumpInput extends PlayerInput {
   type: "jump";
+  kind?: "forward" | "backflip";
 }
 
 export interface ChaosKommandoSelectMercenaryInput extends PlayerInput {
@@ -66,7 +67,18 @@ export interface ChaosKommandoFireReleaseInput extends PlayerInput {
   type: "fire:release";
 }
 
+export interface ChaosKommandoSetFuseInput extends PlayerInput {
+  type: "set-fuse";
+  seconds: number;
+}
+
+export interface ChaosKommandoEndTurnInput extends PlayerInput {
+  type: "end-turn";
+}
+
 export type ChaosKommandoInput =
+  | ChaosKommandoSetFuseInput
+  | ChaosKommandoEndTurnInput
   | ChaosKommandoMoveInput
   | ChaosKommandoAimInput
   | ChaosKommandoJumpInput
@@ -112,6 +124,7 @@ export interface ChaosKommandoMercenaryState {
   maxHp: number;
   alive: boolean;
   grounded: boolean;
+  jumpKind: "forward" | "backflip" | null;
   facing: "left" | "right";
   aimAngleRad: number;
   ammo: Record<ChaosKommandoWeaponId, number>;
@@ -169,6 +182,7 @@ export interface ChaosKommandoTurnState {
   activeMercenaryId: string;
   currentWeaponId: ChaosKommandoWeaponId;
   turnEndsAt: number;
+  fuseSeconds: number;
   /**
    * Bis dahin faehrt die Kamera zum neuen Soeldner: die Zuguhr steht, und
    * Bewegen, Springen und Feuern sind gesperrt.
@@ -261,6 +275,7 @@ export interface ChaosKommandoWindState {
 }
 
 export interface ChaosKommandoState {
+  language: import("@open-party-lab/game-core").SupportedLanguage;
   terrain: ChaosKommandoTerrainState;
   players: ChaosKommandoPlayerState[];
   turn: ChaosKommandoTurnState;

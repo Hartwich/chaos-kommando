@@ -124,6 +124,8 @@ export function resolveCrosshairPoint(state: ChaosKommandoState): ChaosKommandoP
 }
 
 export function resolveTurnRemainingMs(state: ChaosKommandoState, nowMs: number): number {
+  if (nowMs < state.turn.prepEndsAt) return Math.max(0, state.turn.turnEndsAt - state.turn.prepEndsAt);
+  if (state.turn.resolvingShot) return Math.max(0, (state.turn.retreatEndsAt ?? nowMs) - nowMs);
   return Math.max(0, state.turn.turnEndsAt - nowMs);
 }
 

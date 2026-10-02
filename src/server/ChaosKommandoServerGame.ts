@@ -38,11 +38,13 @@ const terrainHeight = 1_260;
 const initialWaterlineY = 1_094;
 const sampleSpacing = 4;
 const mercenaryRadius = 20;
-const walkSpeed = 82;
+const walkSpeed = 68;
 const gravity = 880;
-// Sprunghoehe skaliert mit v^2, fuer +25% Hoehe also v * sqrt(1.25).
-const jumpVelocity = -369;
-const jumpForwardBoost = 92;
+// Fixed ballistic hops: forward covers distance, backflip gains height.
+const jumpVelocity = -300;
+const backflipVelocity = -460;
+const jumpForwardBoost = 150;
+const backflipBoost = 70;
 const turnDurationMs = 30_000;
 /**
  * Vorlauf am Zuganfang. Deckt Namensbanner und Kamerafahrt zum neuen Soeldner
@@ -59,10 +61,9 @@ const settleDelayMs = 1_400;
 const celebrationDelayMs = 3_400;
 const jumpCooldownMs = 650;
 const crosshairDistance = 150;
-// Steigfaehigkeit bewusst 20% ueber dem alten Wert: Steilkanten und
-// Kraterraender bleiben ohne Sprung oder Seil ueberwindbar.
-const stepUpHeight = 17;
-const stepDownHeight = 24;
+// Small steps are walkable; crater lips and cliffs require a jump or rope.
+const stepUpHeight = 8;
+const stepDownHeight = 8;
 const deathExplosionRadius = 88;
 const deathExplosionDamage = 24;
 const deathExplosionCraterDepth = 30;
@@ -178,8 +179,8 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     fireMode: "charged",
     damage: 42,
     blastRadius: 96,
-    projectileSpeed: 900,
-    gravityScale: 0.7,
+    projectileSpeed: 1040,
+    gravityScale: 1,
     windScale: 1,
     fuseMs: null,
     craterDepth: 58
@@ -202,7 +203,7 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
   {
     id: "bohrer-rakete",
     displayName: "Bohrer-Rakete",
-    description: "Frisst sich tief ins Terrain. Schmaler Wirkradius, tiefes Loch.",
+    description: "Bohrt einen 160-Pixel-Tunnel und explodiert dahinter.",
     iconPath: "/chaos-kommando/weapons/arsenal/grenade-launcher.png",
     accentColor: "#f59e0b",
     fireMode: "charged",
@@ -220,14 +221,14 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     description: "Breite Streuung auf kurze Distanz. Wenig Schaden, viel Flaeche.",
     iconPath: "/chaos-kommando/weapons/arsenal/confetti-cannon.png",
     accentColor: "#22d3ee",
-    fireMode: "charged",
-    damage: 30,
-    blastRadius: 118,
-    projectileSpeed: 880,
-    gravityScale: 0.62,
-    windScale: 0.4,
+    fireMode: "instant",
+    damage: 10,
+    blastRadius: 30,
+    projectileSpeed: 1400,
+    gravityScale: 0,
+    windScale: 0,
     fuseMs: null,
-    craterDepth: 46
+    craterDepth: 0
   },
   {
     id: "keks-moerser",
@@ -250,14 +251,14 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     description: "Sechs Schuss in schneller Folge. Einzeln schwach, in Summe boese.",
     iconPath: "/chaos-kommando/weapons/arsenal/minigun.png",
     accentColor: "#38bdf8",
-    fireMode: "charged",
+    fireMode: "instant",
     damage: 13,
-    blastRadius: 46,
-    projectileSpeed: 980,
-    gravityScale: 0.3,
-    windScale: 0.35,
+    blastRadius: 22,
+    projectileSpeed: 1700,
+    gravityScale: 0,
+    windScale: 0,
     fuseMs: null,
-    craterDepth: 16
+    craterDepth: 0
   },
   {
     id: "plunder-pistole",
@@ -267,17 +268,17 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     accentColor: "#fbbf24",
     fireMode: "instant",
     damage: 26,
-    blastRadius: 44,
-    projectileSpeed: 1040,
-    gravityScale: 0.16,
-    windScale: 0.3,
+    blastRadius: 28,
+    projectileSpeed: 1600,
+    gravityScale: 0,
+    windScale: 0,
     fuseMs: null,
-    craterDepth: 14
+    craterDepth: 0
   },
   {
     id: "splitter-granate",
     displayName: "Splitter-Granate",
-    description: "Zuverlaessige Standardgranate mit kurzer Zuendschnur.",
+    description: "Standardgranate. Zuender von 1 bis 5 Sekunden einstellbar.",
     iconPath: "/chaos-kommando/weapons/arsenal/frag-grenade.png",
     accentColor: "#facc15",
     fireMode: "charged",
@@ -372,12 +373,12 @@ const weaponDefinitions: ChaosKommandoWeaponDefinition[] = [
     accentColor: "#ef4444",
     fireMode: "instant",
     damage: 46,
-    blastRadius: 132,
+    blastRadius: 150,
     projectileSpeed: 0,
     gravityScale: 1,
     windScale: 0,
     fuseMs: 3_800,
-    craterDepth: 74
+    craterDepth: 110
   },
   {
     id: "baseball-schlaeger",
@@ -477,12 +478,12 @@ const weaponTexts: Partial<
   en: {
     "kicher-bazooka": { displayName: "Giggler Bazooka", description: "The classic. Flies far, the wind joins in." },
     "regenbogen-rakete": { displayName: "Rainbow Rocket", description: "Flat arc, barely any wind. Hits at long range." },
-    "bohrer-rakete": { displayName: "Drill Rocket", description: "Bites deep into the terrain. Narrow blast, deep hole." },
+    "bohrer-rakete": { displayName: "Drill Rocket", description: "Drills a long tunnel through the terrain, then explodes at its end." },
     "konfetti-schrot": { displayName: "Confetti Shotgun", description: "Wide close-range spread. Low damage, lots of area." },
     "keks-moerser": { displayName: "Cookie Mortar", description: "Steep arc straight over cover." },
     minigun: { displayName: "Confetti Minigun", description: "Six rounds in quick succession. Weak alone, nasty together." },
     "plunder-pistole": { displayName: "Plunder Pistol", description: "Instant shot, no charging. Precise, little punch." },
-    "splitter-granate": { displayName: "Shrapnel Grenade", description: "Reliable standard grenade with a short fuse." },
+    "splitter-granate": { displayName: "Shrapnel Grenade", description: "Bounces, then scatters fragments. Choose a fuse from 1 to 5 seconds." },
     "enten-granate": { displayName: "Duck Grenade", description: "Quacks, bounces, then makes a proper racket." },
     "heilige-granate": { displayName: "Holy Grenade", description: "Hallelujah. The widest blast in the whole arsenal." },
     banane: { displayName: "Banana Bomb", description: "Bursts on impact into five bouncing mini bananas." },
@@ -640,158 +641,27 @@ interface TerrainPreset {
  * `initialCraters` unter einem Ruecken, schwebende Inseln aus `platforms`.
  */
 const terrainPresets: TerrainPreset[] = [
-  {
-    id: "klapperkueste",
-    name: "Klapperkueste",
-    controlPoints: [
-      { x: 0, y: 866 },
-      { x: 140, y: 800 },
-      { x: 300, y: 648 },
-      { x: 360, y: 470 },
-      { x: 470, y: 462 },
-      { x: 560, y: 466 },
-      { x: 620, y: 700 },
-      { x: 760, y: 742 },
-      { x: 830, y: 470 },
-      { x: 1000, y: 452 },
-      { x: 1060, y: 448 },
-      { x: 1130, y: 780 },
-      { x: 1290, y: 812 },
-      { x: 1400, y: 590 },
-      { x: 1520, y: 430 },
-      { x: 1660, y: 426 },
-      { x: 1720, y: 604 },
-      { x: 1880, y: 690 },
-      { x: 1990, y: 512 },
-      { x: 2110, y: 508 },
-      { x: 2180, y: 742 },
-      { x: 2360, y: 872 }
-    ],
-    initialCraters: [
-      { x: 620, y: 812, r: 74 },
-      { x: 700, y: 836, r: 70 },
-      { x: 1190, y: 898, r: 80 },
-      { x: 1280, y: 906, r: 72 },
-      { x: 1746, y: 700, r: 62 }
-    ],
-    platforms: [
-      { x: 940, y: 320, rx: 138, ry: 40 },
-      { x: 1780, y: 286, rx: 104, ry: 34 }
-    ]
-  },
-  {
-    id: "seeschlund",
-    name: "Seeschlund",
-    controlPoints: [
-      { x: 0, y: 812 },
-      { x: 200, y: 706 },
-      { x: 260, y: 520 },
-      { x: 420, y: 512 },
-      { x: 480, y: 690 },
-      { x: 640, y: 830 },
-      { x: 800, y: 856 },
-      { x: 900, y: 612 },
-      { x: 1010, y: 442 },
-      { x: 1160, y: 438 },
-      { x: 1240, y: 632 },
-      { x: 1380, y: 796 },
-      { x: 1520, y: 566 },
-      { x: 1600, y: 446 },
-      { x: 1760, y: 452 },
-      { x: 1840, y: 690 },
-      { x: 2000, y: 738 },
-      { x: 2090, y: 520 },
-      { x: 2210, y: 516 },
-      { x: 2360, y: 796 }
-    ],
-    initialCraters: [
-      { x: 700, y: 930, r: 84 },
-      { x: 790, y: 946, r: 78 },
-      { x: 1084, y: 604, r: 66 },
-      { x: 1400, y: 890, r: 70 },
-      { x: 2150, y: 664, r: 60 }
-    ],
-    platforms: [
-      { x: 1300, y: 300, rx: 122, ry: 36 },
-      { x: 520, y: 344, rx: 96, ry: 32 },
-      { x: 1960, y: 328, rx: 110, ry: 34 }
-    ]
-  },
-  {
-    id: "brandungstreppe",
-    name: "Brandungstreppe",
-    controlPoints: [
-      { x: 0, y: 880 },
-      { x: 170, y: 872 },
-      { x: 200, y: 736 },
-      { x: 400, y: 730 },
-      { x: 430, y: 606 },
-      { x: 640, y: 600 },
-      { x: 670, y: 470 },
-      { x: 860, y: 466 },
-      { x: 900, y: 686 },
-      { x: 1120, y: 830 },
-      { x: 1300, y: 836 },
-      { x: 1340, y: 622 },
-      { x: 1540, y: 616 },
-      { x: 1580, y: 462 },
-      { x: 1790, y: 458 },
-      { x: 1830, y: 640 },
-      { x: 2040, y: 636 },
-      { x: 2080, y: 782 },
-      { x: 2360, y: 860 }
-    ],
-    initialCraters: [
-      { x: 900, y: 800, r: 72 },
-      { x: 990, y: 842, r: 76 },
-      { x: 1210, y: 926, r: 82 },
-      { x: 1830, y: 748, r: 64 }
-    ],
-    platforms: [
-      { x: 1110, y: 340, rx: 126, ry: 38 },
-      { x: 1700, y: 268, rx: 92, ry: 30 }
-    ]
-  },
-  {
-    id: "wurmfelsen",
-    name: "Wurmfelsen",
-    controlPoints: [
-      { x: 0, y: 892 },
-      { x: 180, y: 742 },
-      { x: 240, y: 498 },
-      { x: 420, y: 470 },
-      { x: 470, y: 464 },
-      { x: 530, y: 700 },
-      { x: 700, y: 812 },
-      { x: 860, y: 838 },
-      { x: 940, y: 566 },
-      { x: 1080, y: 424 },
-      { x: 1240, y: 420 },
-      { x: 1310, y: 660 },
-      { x: 1470, y: 706 },
-      { x: 1560, y: 486 },
-      { x: 1700, y: 480 },
-      { x: 1780, y: 742 },
-      { x: 1950, y: 800 },
-      { x: 2040, y: 542 },
-      { x: 2180, y: 496 },
-      { x: 2250, y: 620 },
-      { x: 2360, y: 826 }
-    ],
-    initialCraters: [
-      { x: 540, y: 828, r: 78 },
-      { x: 630, y: 852, r: 74 },
-      { x: 1320, y: 780, r: 72 },
-      { x: 1410, y: 806, r: 68 },
-      { x: 1790, y: 870, r: 76 },
-      { x: 2100, y: 630, r: 58 }
-    ],
-    platforms: [
-      { x: 800, y: 306, rx: 116, ry: 36 },
-      { x: 1640, y: 322, rx: 132, ry: 40 },
-      { x: 2240, y: 300, rx: 88, ry: 28 }
-    ]
-  }
+  { id: "korallenriff", name: "Korallenriff", controlPoints: [
+    { x: 0, y: 1200 }, { x: 100, y: 760 }, { x: 310, y: 520 }, { x: 540, y: 690 },
+    { x: 670, y: 780 }, { x: 740, y: 1220 }, { x: 850, y: 1220 }, { x: 910, y: 750 },
+    { x: 1150, y: 600 }, { x: 1410, y: 720 }, { x: 1510, y: 1220 }, { x: 1630, y: 1220 },
+    { x: 1730, y: 760 }, { x: 2000, y: 510 }, { x: 2250, y: 750 }, { x: 2360, y: 1200 }
+  ], initialCraters: [{ x: 1120, y: 860, r: 110 }, { x: 1260, y: 880, r: 112 }],
+    platforms: [{ x: 730, y: 500, rx: 100, ry: 44 }, { x: 1620, y: 480, rx: 90, ry: 40 }] },
+  { id: "brueckenbucht", name: "Brueckenbucht", controlPoints: [
+    { x: 0, y: 1200 }, { x: 100, y: 850 }, { x: 340, y: 650 }, { x: 590, y: 790 },
+    { x: 700, y: 1220 }, { x: 820, y: 1220 }, { x: 930, y: 640 }, { x: 1180, y: 450 },
+    { x: 1420, y: 650 }, { x: 1530, y: 1220 }, { x: 1640, y: 1220 }, { x: 1790, y: 800 },
+    { x: 2040, y: 620 }, { x: 2250, y: 820 }, { x: 2360, y: 1200 }
+  ], initialCraters: [{ x: 1080, y: 760, r: 110 }, { x: 1220, y: 760, r: 110 }, { x: 1360, y: 760, r: 110 }],
+    platforms: [{ x: 700, y: 540, rx: 125, ry: 40 }, { x: 1630, y: 560, rx: 125, ry: 40 }] },
+  { id: "splitterinseln", name: "Splitterinseln", controlPoints: [
+    { x: 0, y: 1200 }, { x: 100, y: 760 }, { x: 280, y: 580 }, { x: 490, y: 700 },
+    { x: 590, y: 1220 }, { x: 730, y: 1220 }, { x: 830, y: 820 }, { x: 1100, y: 650 },
+    { x: 1370, y: 820 }, { x: 1490, y: 1220 }, { x: 1630, y: 1220 }, { x: 1730, y: 700 },
+    { x: 1990, y: 560 }, { x: 2240, y: 810 }, { x: 2360, y: 1200 }
+  ], initialCraters: [{ x: 250, y: 820, r: 80 }, { x: 1990, y: 810, r: 92 }],
+    platforms: [{ x: 650, y: 470, rx: 120, ry: 48 }, { x: 1530, y: 480, rx: 120, ry: 48 }, { x: 1200, y: 410, rx: 105, ry: 42 }] }
 ];
 
 function clamp(value: number, min: number, max: number): number {
@@ -863,21 +733,21 @@ function buildWind(seed: number, language: SupportedLanguage): ChaosKommandoWind
   };
 }
 
-function createSpawnAnchors(playerCount: number): number[] {
-  switch (playerCount) {
-    case 2:
-      return [440, terrainWidth - 440];
-    case 3:
-      return [360, terrainWidth / 2, terrainWidth - 360];
-    default:
-      return [280, 820, terrainWidth - 820, terrainWidth - 280];
+function createSpawnSlots(playerCount: number, terrain: ChaosKommandoTerrainState): number[] {
+  const slots: number[] = [];
+  const count = playerCount * 3;
+  for (let index = 0; index < count; index += 1) {
+    const desired = 110 + index * (terrain.width - 220) / Math.max(1, count - 1);
+    for (let offset = 0; offset < terrain.width; offset += 6) {
+      const candidates = offset === 0 ? [desired] : [desired - offset, desired + offset];
+      const x = candidates.find((candidate) => candidate >= 70 && candidate <= terrain.width - 70 &&
+        slots.every((used) => Math.abs(used - candidate) > mercenaryRadius * 3) &&
+        resolveSpawnSurfaceY(terrain, candidate) < terrain.waterlineY - 120 &&
+        !isTerrainSolid(terrain, candidate, resolveSpawnSurfaceY(terrain, candidate) - mercenaryRadius * 2));
+      if (x !== undefined) { slots.push(x); break; }
+    }
   }
-}
-
-function createMercenarySpawnXs(anchor: number, width: number): number[] {
-  return [-250, 0, 250].map((offset) =>
-    clamp(anchor + offset, mercenaryRadius + 16, width - mercenaryRadius - 16)
-  );
+  return slots;
 }
 
 function smoothStep(value: number): number {
@@ -917,98 +787,6 @@ function resolveSampleHeight(samples: number[], x: number): number {
   return (samples[leftIndex] ?? samples[samples.length - 1]) * (1 - blend) + (samples[rightIndex] ?? samples[leftIndex] ?? 0) * blend;
 }
 
-function flattenTerrain(samples: number[], centerX: number, width: number, targetY: number): void {
-  const startIndex = Math.max(0, Math.floor((centerX - width) / sampleSpacing));
-  const endIndex = Math.min(samples.length - 1, Math.ceil((centerX + width) / sampleSpacing));
-
-  for (let index = startIndex; index <= endIndex; index += 1) {
-    const sampleX = index * sampleSpacing;
-    const distance = Math.abs(sampleX - centerX);
-    const influence = clamp(1 - distance / width, 0, 1);
-    const blend = 1 - (1 - influence) * (1 - influence);
-    samples[index] = samples[index] * (1 - blend) + targetY * blend;
-  }
-}
-
-/**
- * Schneidet Boegen in die Huegelruecken.
- *
- * Ein Bogen entsteht, wenn eine waagerechte Kraterkette einen Huegel auf einer
- * festen Hoehe komplett durchtrennt: Ueber der Kette bleibt das Dach stehen,
- * an beiden Flanken laeuft das Loch genau auf Bodenniveau aus. Ergebnis ist
- * eine begehbare Bruecke mit Durchschuss darunter. Die Hoehenkarte allein kann
- * das nicht, weil sie pro x nur eine Oberflaeche kennt.
- */
-function carveArches(
-  samples: number[],
-  spawnPoints: number[],
-  craters: ChaosKommandoCraterState[]
-): void {
-  const roofThickness = 118;
-  const craterRadius = 44;
-  const minSpan = 190;
-  const maxSpan = 640;
-  /**
-   * Die Kette endet knapp innerhalb der Flanke. Ohne diesen Versatz wuerde sie
-   * den Huegel vollstaendig durchtrennen und das Dach als freischwebende
-   * Scholle zuruecklassen; mit ihm bleibt eine schmale Lippe stehen, die das
-   * Dach traegt und die Bogenoeffnung trotzdem freilegt.
-   */
-  const flankInset = craterRadius * 0.5;
-  const carved: number[] = [];
-
-  for (let index = 8; index < samples.length - 8; index += 1) {
-    const peakY = samples[index];
-    const peakX = index * sampleSpacing;
-
-    // Nur echte lokale Gipfel, mit Abstand zu Startpunkten und anderen Boegen.
-    if (peakY > samples[index - 8] || peakY > samples[index + 8]) {
-      continue;
-    }
-    if (spawnPoints.some((spawnX) => Math.abs(spawnX - peakX) < 200)) {
-      continue;
-    }
-    if (carved.some((archX) => Math.abs(archX - peakX) < 460)) {
-      continue;
-    }
-
-    const archY = peakY + roofThickness;
-    let leftIndex = index;
-    let rightIndex = index;
-
-    while (leftIndex > 0 && samples[leftIndex] < archY) {
-      leftIndex -= 1;
-    }
-    while (rightIndex < samples.length - 1 && samples[rightIndex] < archY) {
-      rightIndex += 1;
-    }
-
-    const span = (rightIndex - leftIndex) * sampleSpacing;
-
-    if (span < minSpan || span > maxSpan) {
-      continue;
-    }
-
-    const from = leftIndex * sampleSpacing + flankInset;
-    const to = rightIndex * sampleSpacing - flankInset;
-
-    for (let x = from; x <= to; x += craterRadius * 1.25) {
-      craters.push({
-        x: Math.round(x),
-        y: Math.round(archY + craterRadius - 10),
-        r: craterRadius
-      });
-    }
-    craters.push({ x: Math.round(to), y: Math.round(archY + craterRadius - 10), r: craterRadius });
-
-    carved.push(peakX);
-
-    if (carved.length >= 2) {
-      return;
-    }
-  }
-}
-
 function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainState {
   const preset = terrainPresets[Math.abs(seed) % terrainPresets.length] ?? terrainPresets[0];
   const sampleCount = Math.floor(terrainWidth / sampleSpacing) + 1;
@@ -1019,21 +797,11 @@ function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainS
       Math.sin(x / 64) * 7 +
       Math.cos(x / 118) * 5 +
       Math.sin(x / 28) * 2;
-
-    return clamp(sculpted, 410, initialWaterlineY - 66);
+    return clamp(sculpted, 410, terrainHeight);
   });
-
-  const spawnPoints = createSpawnAnchors(playerCount).flatMap((anchorX) =>
-    createMercenarySpawnXs(anchorX, terrainWidth)
-  );
-
-  for (const spawnX of spawnPoints) {
-    flattenTerrain(samples, spawnX, 118, clamp(resolveSampleHeight(samples, spawnX) - 6, 430, 660));
-  }
-
+  // Keep water channels and natural cliff silhouettes intact. Spawn safety is
+  // resolved against the complete solid geometry, including floating ledges.
   const craters = preset.initialCraters.map((crater) => ({ ...crater }));
-  carveArches(samples, spawnPoints, craters);
-
   return {
     mapId: preset.id,
     mapName: preset.name,
@@ -1131,29 +899,13 @@ function resolveSpawnSurfaceY(terrain: ChaosKommandoTerrainState, x: number): nu
 }
 
 function buildAmmo(): Record<ChaosKommandoWeaponId, number> {
-  // Nur der Schlaeger ist unbegrenzt. Alles andere ist knapp und wird
-  // ueber Nachschubkisten aufgefuellt.
   return {
-    "baseball-schlaeger": Number.POSITIVE_INFINITY,
-    seilzug: 4,
-    "kicher-bazooka": 6,
-    "splitter-granate": 4,
-    "plunder-pistole": 5,
-    "enten-granate": 0,
-    "regenbogen-rakete": 0,
-    "konfetti-schrot": 0,
-    "bohrer-rakete": 0,
-    "gummi-huhn": 0,
-    "seifenblasen-bombe": 0,
-    "keks-moerser": 0,
-    dynamit: 0,
-    "heilige-granate": 0,
-    banane: 0,
-    minigun: 0,
-    "funk-bombenteppich": 0,
-    "leucht-salve": 0,
-    "signal-schauer": 0,
-    "pfeifen-sturzflug": 0
+    "baseball-schlaeger": 99, seilzug: 6, "kicher-bazooka": 9,
+    "enten-granate": 5, "splitter-granate": 2, "plunder-pistole": 4,
+    "regenbogen-rakete": 2, "konfetti-schrot": 3, "bohrer-rakete": 2,
+    "gummi-huhn": 2, "seifenblasen-bombe": 2, "keks-moerser": 2,
+    dynamit: 2, "heilige-granate": 1, banane: 1, minigun: 2,
+    "funk-bombenteppich": 1, "leucht-salve": 1, "signal-schauer": 1, "pfeifen-sturzflug": 1
   };
 }
 
@@ -1186,6 +938,7 @@ function createMercenary(
     maxHp: 100,
     alive: true,
     grounded: true,
+    jumpKind: null,
     facing: mercenaryIndex % 2 === 0 ? "right" : "left",
     aimAngleRad: mercenaryIndex % 2 === 0 ? -Math.PI / 4 : (-Math.PI * 3) / 4,
     ammo: buildAmmo(),
@@ -1203,12 +956,7 @@ function createMines(
   seed: number
 ): RuntimeMineState[] {
   const rng = createRng(seed ^ 0x77aa11);
-  // Gegen die echten Soeldner-Startpunkte pruefen, nicht nur gegen den Team-Anker.
-  // Die Soeldner stehen bei anchor-250, anchor und anchor+250; eine Mine bei
-  // anchor+240 lag damit frueher direkt unter einer Figur.
-  const spawnPoints = createSpawnAnchors(playerCount).flatMap((anchor) =>
-    createMercenarySpawnXs(anchor, terrain.width)
-  );
+  const spawnPoints = createSpawnSlots(playerCount, terrain);
   const mines: RuntimeMineState[] = [];
   const mineCount = 5 + playerCount;
   let attempts = 0;
@@ -1276,17 +1024,15 @@ function createPlayers(
           connected: true
         }
       ];
-  const anchors = createSpawnAnchors(safePlayers.length);
-
+  const slots = createSpawnSlots(safePlayers.length, terrain);
   return safePlayers.map((player, playerIndex) => {
-    const anchor = anchors[playerIndex] ?? anchors[anchors.length - 1] ?? terrain.width / 2;
-    const spawnXs = createMercenarySpawnXs(anchor, terrain.width);
+    const spawnXs = [0, 1, 2].map((index) => slots[index * safePlayers.length + playerIndex] ?? terrain.width / 2);
     const mercenaries = mercenaryTemplates.map((template, mercenaryIndex) =>
       createMercenary(
         player,
         template,
         mercenaryIndex,
-        spawnXs[mercenaryIndex] ?? anchor,
+        spawnXs[mercenaryIndex] ?? terrain.width / 2,
         terrain
       )
     );
@@ -1477,7 +1223,8 @@ function buildTurnState(players: RuntimePlayerState[], now: number): RuntimeTurn
     activeMercenaryId,
     lastMercenaryIdByPlayer: currentPlayer ? { [currentPlayer.playerId]: activeMercenaryId } : {},
     currentWeaponId: resolveAvailableWeapon(activeMercenary, "kicher-bazooka"),
-    turnEndsAt: now + turnPrepMs + turnDurationMs,
+    fuseSeconds: 3,
+      turnEndsAt: now + turnPrepMs + turnDurationMs,
     prepEndsAt: now + turnPrepMs,
     hasFired: false,
     resolvingShot: false,
@@ -1638,7 +1385,7 @@ function applySuddenDeath(
   turnNumber: number,
   now: number
 ): ChaosKommandoRuntimeState {
-  if (turnNumber < suddenDeathTurn) {
+  if (turnNumber < Math.max(suddenDeathTurn, state.players.length * 4)) {
     return state;
   }
 
@@ -1653,7 +1400,7 @@ function applySuddenDeath(
       waterlineY: nextWaterlineY
     },
     actionLog:
-      turnNumber === suddenDeathTurn
+      !state.suddenDeath
         ? pushActionLog(state.actionLog, text.suddenDeath)
         : state.actionLog,
     updatedAt: now
@@ -1688,6 +1435,7 @@ function startPlayerTurn(
       currentPlayerId: playerId,
       activeMercenaryId,
       currentWeaponId: nextWeaponId,
+      fuseSeconds: 3,
       turnEndsAt: now + turnPrepMs + turnDurationMs,
       prepEndsAt: now + turnPrepMs,
       lastMercenaryIdByPlayer: { ...state.turn.lastMercenaryIdByPlayer, [playerId]: activeMercenaryId },
@@ -1760,14 +1508,17 @@ function updateTerrainForExplosion(
   if (craterDepth <= 0 || radius <= 4) {
     return terrain;
   }
-
-  // Der Umgebungsschaden ist bewusst deutlich kleiner als der Trefferradius:
-  // Spieler werden auf `blastRadius` getroffen, das Terrain nur auf 67.5% davon.
-  const craterRadius = Math.max(6, radius * 0.675);
-
+  // Terrain damage follows the weapon: bullets chip, rockets carve, heavy bombs excavate.
+  const craterRadius = clamp(craterDepth * 1.15, 8, radius * 0.95);
   return {
     ...terrain,
-    craters: [...terrain.craters, { x: Math.round(x), y: Math.round(y), r: Math.round(craterRadius) }]
+    craters: [...terrain.craters,
+      { x: Math.round(x), y: Math.round(y), r: Math.round(craterRadius) },
+      ...Array.from({ length: 5 }, (_, index) => {
+        const angle = index * Math.PI * 2 / 5 + x * 0.01;
+        return { x: Math.round(x + Math.cos(angle) * craterRadius * 0.82),
+          y: Math.round(y + Math.sin(angle) * craterRadius * 0.82), r: Math.max(3, Math.round(craterRadius * 0.25)) };
+      })]
   };
 }
 
@@ -1825,6 +1576,7 @@ function applyExplosion(
         hp: nextHp,
         alive: mercenary.alive ? !killed : false,
         grounded: false,
+        jumpKind: null,
         vx: mercenary.vx + pushX * pushStrength,
         vy: mercenary.vy + pushY * pushStrength - 130,
         airborneFromY: mercenary.y
@@ -2485,6 +2237,7 @@ function fireActiveWeapon(
         resolvingShot: true,
         chargeStartedAt: null,
         chargeRatio: 0,
+        retreatEndsAt: now + retreatDurationMs,
         settleEndsAt: null
       },
       actionLog: pushActionLog(
@@ -2534,7 +2287,9 @@ function fireActiveWeapon(
     state,
     activeMercenary,
     weaponId,
-    definition,
+    definition.fuseMs !== null && weaponId !== "dynamit"
+      ? { ...definition, fuseMs: state.turn.fuseSeconds * 1000 }
+      : definition,
     normalizedChargeRatio,
     now
   );
@@ -2578,7 +2333,8 @@ function fireActiveWeapon(
       resolvingShot: true,
       chargeStartedAt: null,
       chargeRatio: 0,
-      settleEndsAt: null
+      retreatEndsAt: now + retreatDurationMs,
+        settleEndsAt: null
     },
     actionLog: pushActionLog(
       state.actionLog,
@@ -2681,6 +2437,20 @@ function updateProjectile(
 
     if (isTerrainSolid(terrain, leadX, leadY) || isTerrainSolid(terrain, nextProjectile.x, nextProjectile.y)) {
       if (!bouncy && nextProjectile.weaponId !== "seifenblasen-bombe") {
+        if (nextProjectile.weaponId === "bohrer-rakete") {
+          let drilled = state.terrain;
+          const impactX = nextProjectile.x;
+          const impactY = nextProjectile.y;
+          for (let distance = 0; distance <= 160; distance += 12) {
+            const x = impactX + nextProjectile.vx / velocityMagnitude * distance;
+            const y = impactY + nextProjectile.vy / velocityMagnitude * distance;
+            if (y >= terrain.waterlineY || x < 0 || x > terrain.width) break;
+            drilled = updateTerrainForExplosion(drilled, x, y, 24, 18);
+            nextProjectile.x = x; nextProjectile.y = y;
+          }
+          return detonateProjectile({ ...state, terrain: drilled }, nextProjectile, now);
+        }
+
         return detonateProjectile(state, nextProjectile, now);
       }
 
@@ -3122,6 +2892,25 @@ function applyRopeStep(
   return { rope: { ...rope, length: nextLength } };
 }
 
+function canControlMovement(state: ChaosKommandoRuntimeState, now: number): boolean {
+  return now >= state.turn.prepEndsAt && (state.turn.resolvingShot
+    ? state.turn.retreatEndsAt !== null && now < state.turn.retreatEndsAt
+    : now < state.turn.turnEndsAt && state.turn.chargeStartedAt === null);
+}
+
+function endActiveTurn(state: ChaosKommandoRuntimeState, now: number): ChaosKommandoRuntimeState {
+  return {
+    ...state,
+    rope: null,
+    players: state.players.map((player) => ({ ...player,
+      mercenaries: player.mercenaries.map((mercenary) => ({ ...mercenary, moveInputX: 0, moveInputY: 0 }))
+    })),
+    turn: { ...state.turn, hasFired: true, resolvingShot: true, retreatEndsAt: now,
+      chargeStartedAt: null, chargeRatio: 0,
+      settleEndsAt: Math.max(state.turn.settleEndsAt ?? 0, now + settleDelayMs) }
+  };
+}
+
 function applyMercenaryPhysics(
   state: ChaosKommandoRuntimeState,
   deltaMs: number,
@@ -3137,12 +2926,17 @@ function applyMercenaryPhysics(
   const nextPlayers = state.players.map((player) => ({
     ...player,
     mercenaries: player.mercenaries.map((mercenary) => {
-      // Worms style: the active worm may also move while the shot resolves (retreat).
+      // Only the planning turn and bounded retreat window accept movement.
       const isActiveMercenary =
+        canControlMovement(state, now) &&
         mercenary.alive &&
         mercenary.id === state.turn.activeMercenaryId &&
         player.playerId === state.turn.currentPlayerId;
       const nextMercenary = { ...mercenary };
+      if (!isActiveMercenary) {
+        nextMercenary.moveInputX = 0;
+        nextMercenary.moveInputY = 0;
+      }
       const terrainLeft = nextMercenary.radius + 8;
       const terrainRight = terrain.width - nextMercenary.radius - 8;
 
@@ -3167,7 +2961,7 @@ function applyMercenaryPhysics(
       if (nextMercenary.grounded) {
         if (isActiveMercenary && Math.abs(nextMercenary.moveInputX) > 0.12) {
           const direction = Math.sign(nextMercenary.moveInputX);
-          nextMercenary.vx = nextMercenary.moveInputX * walkSpeed;
+          nextMercenary.vx = direction * walkSpeed;
           nextMercenary.facing = direction > 0 ? "right" : "left";
 
           const targetX = clamp(
@@ -3223,6 +3017,8 @@ function applyMercenaryPhysics(
       }
 
       if (!nextMercenary.grounded) {
+        // Falls are measured from the apex, including blast launches.
+        nextMercenary.airborneFromY = Math.min(nextMercenary.airborneFromY ?? nextMercenary.y, nextMercenary.y);
         nextMercenary.vx *= 0.995;
         nextMercenary.vy += gravity * seconds;
 
@@ -3268,12 +3064,12 @@ function applyMercenaryPhysics(
             const airborneFromY = nextMercenary.airborneFromY ?? nextMercenary.y;
             const fallDistance = landingY - airborneFromY;
             const fallDamage =
-              nextMercenary.alive && fallDistance > 110 ? Math.round((fallDistance - 110) * 0.16) : 0;
-
+              nextMercenary.alive && fallDistance > 150 ? Math.round((fallDistance - 150) * 0.16) : 0;
             nextMercenary.y = landingY;
             nextMercenary.vy = 0;
             nextMercenary.vx *= 0.45;
             nextMercenary.grounded = true;
+            nextMercenary.jumpKind = null;
             nextMercenary.airborneFromY = null;
             nextMercenary.hp = Math.max(0, nextMercenary.hp - fallDamage);
             nextMercenary.alive = nextMercenary.alive ? nextMercenary.hp > 0 : false;
@@ -3301,7 +3097,7 @@ function applyMercenaryPhysics(
     ...state,
     players: refreshedPlayers,
     rope: nextRope,
-    explosions: state.explosions.filter((explosion) => now - explosion.createdAt <= 950),
+    explosions: state.explosions.filter((explosion) => now - explosion.createdAt <= 1600),
     actionLog: drownedName
       ? pushActionLog(state.actionLog, text.drowned(drownedName))
       : state.actionLog,
@@ -3353,6 +3149,8 @@ function maybeAdvanceAfterShot(state: ChaosKommandoRuntimeState, now: number): C
     !state.turn.resolvingShot ||
     state.burst !== null ||
     state.projectiles.length > 0 ||
+    state.mines.some((mine) => mine.explodesAt !== null) ||
+    state.players.some((player) => player.mercenaries.some((mercenary) => mercenary.alive && !mercenary.grounded)) ||
     state.activeDeathSequence ||
     state.deathQueueMercenaryIds.length > 0
   ) {
@@ -3371,20 +3169,6 @@ function maybeAdvanceAfterShot(state: ChaosKommandoRuntimeState, now: number): C
 
   const activeMercenary = findMercenaryById(state, state.turn.activeMercenaryId);
   const text = chaosKommandoText[state.language];
-
-  // Worms retreat: a short escape window before the next team takes over.
-  if (state.turn.retreatEndsAt === null && activeMercenary?.alive) {
-    return {
-      ...state,
-      turn: {
-        ...state.turn,
-        retreatEndsAt: now + retreatDurationMs
-      },
-      actionLog: pushActionLog(state.actionLog, text.retreat),
-      updatedAt: now
-    };
-  }
-
   if (state.turn.retreatEndsAt !== null && now < state.turn.retreatEndsAt) {
     return state;
   }
@@ -3447,6 +3231,7 @@ function buildPublicTurn(turn: RuntimeTurnState): ChaosKommandoTurnState {
 
 function buildControllerState(state: ChaosKommandoRuntimeState): ChaosKommandoState {
   return {
+    language: state.language,
     terrain: {
       mapId: state.terrain.mapId,
       mapName: state.terrain.mapName,
@@ -3586,9 +3371,19 @@ export const chaosKommandoServerGame: ServerGame<
     // Zielen sind erlaubt, damit man den Zug vorbereiten kann.
     if (
       context.now < state.turn.prepEndsAt &&
-      (input.type === "move" || input.type === "jump" || input.type === "fire:start" || input.type === "fire:release")
+      (input.type === "move" || input.type === "jump" || input.type === "end-turn" || input.type === "fire:start" || input.type === "fire:release")
     ) {
       return state;
+    }
+    if (state.turn.resolvingShot) {
+      if ((input.type !== "move" && input.type !== "jump") || !canControlMovement(state, context.now)) return state;
+    } else if (context.now >= state.turn.turnEndsAt) return state;
+    if ((input.type === "move" || input.type === "aim") &&
+        ![input.type === "move" ? input.moveX : input.aimX, input.type === "move" ? input.moveY : input.aimY].every(Number.isFinite)) return state;
+    if (input.type === "end-turn") return endActiveTurn(state, context.now);
+    if (input.type === "set-fuse") {
+      if (!Number.isInteger(input.seconds) || input.seconds < 1 || input.seconds > 5) return state;
+      return { ...state, turn: { ...state.turn, fuseSeconds: input.seconds }, updatedAt: context.now };
     }
 
     // Soeldner werden reihum eingesetzt. Eine Auswahl gibt es bewusst nicht
@@ -3674,7 +3469,7 @@ export const chaosKommandoServerGame: ServerGame<
     }
 
     if (input.type === "jump") {
-      if (!activeMercenary.grounded || activeMercenary.jumpReadyAt > context.now) {
+      if (state.turn.chargeStartedAt !== null || state.rope || !activeMercenary.grounded || activeMercenary.jumpReadyAt > context.now) {
         return state;
       }
 
@@ -3691,8 +3486,9 @@ export const chaosKommandoServerGame: ServerGame<
                 ? {
                     ...mercenary,
                     grounded: false,
-                    vy: jumpVelocity,
-                    vx: mercenary.vx + hopDirection * jumpForwardBoost,
+                    jumpKind: input.kind === "backflip" ? "backflip" : "forward",
+                    vy: input.kind === "backflip" ? backflipVelocity : jumpVelocity,
+                    vx: input.kind === "backflip" ? -hopDirection * backflipBoost : hopDirection * jumpForwardBoost,
                     jumpReadyAt: context.now + jumpCooldownMs,
                     airborneFromY: mercenary.y
                   }
@@ -3706,6 +3502,7 @@ export const chaosKommandoServerGame: ServerGame<
     }
 
     if (input.type === "fire:start") {
+      if (state.turn.hasFired || state.turn.resolvingShot) return state;
       // Der Seilzug liegt bewusst auf der Feuertaste: gedrueckt wirft er den
       // Haken, erneut gedrueckt laesst er los. Er verbraucht den Schuss des
       // Zuges nicht, sonst waere er als Fortbewegung wertlos.
@@ -3759,7 +3556,7 @@ export const chaosKommandoServerGame: ServerGame<
       if ((activeMercenary.ammo[state.turn.currentWeaponId] ?? 0) <= 0) {
         return state;
       }
-
+      if (!activeMercenary.grounded && !state.rope) return state;
       if (definition.fireMode === "instant") {
         return fireActiveWeapon(state, context.now, 1);
       }
@@ -3787,8 +3584,8 @@ export const chaosKommandoServerGame: ServerGame<
       if (definition.fireMode === "instant") {
         return state;
       }
-
-      const chargeStartedAt = state.turn.chargeStartedAt ?? context.now - 420;
+      if (state.turn.chargeStartedAt === null || (!activeMercenary.grounded && !state.rope)) return state;
+      const chargeStartedAt = state.turn.chargeStartedAt;
       const chargeRatio = clamp((context.now - chargeStartedAt) / chargeWindowMs, 0.2, 1);
       return fireActiveWeapon(state, context.now, chargeRatio);
     }
@@ -3819,6 +3616,11 @@ export const chaosKommandoServerGame: ServerGame<
         return nextState;
       }
     }
+    const previousActive = findMercenaryById(state, state.turn.activeMercenaryId);
+    const currentActive = findMercenaryById(nextState, state.turn.activeMercenaryId);
+    if (previousActive?.alive && currentActive && (currentActive.hp < previousActive.hp || !currentActive.alive)) {
+      nextState = endActiveTurn(nextState, context.now);
+    }
 
     if (
       nextState.turn.chargeStartedAt !== null &&
@@ -3831,7 +3633,10 @@ export const chaosKommandoServerGame: ServerGame<
     }
 
     if (!nextState.turn.hasFired && context.now >= nextState.turn.turnEndsAt) {
-      nextState = resolveNextTurn(nextState, context.now, chaosKommandoText[nextState.language].clockFaster);
+      nextState = endActiveTurn(nextState, context.now);
+    }
+    if (nextState.turn.resolvingShot && !canControlMovement(nextState, context.now) && nextState.rope) {
+      nextState = { ...nextState, rope: null };
     }
 
     nextState = maybeAdvanceAfterShot(nextState, context.now);
@@ -3860,7 +3665,8 @@ export const chaosKommandoServerGame: ServerGame<
   },
   toPublicState(state) {
     return {
-      terrain: state.terrain,
+      language: state.language,
+    terrain: state.terrain,
       players: buildPublicPlayers(state.players),
       turn: buildPublicTurn(state.turn),
       weapons: state.weapons,

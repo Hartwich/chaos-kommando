@@ -61,6 +61,11 @@ interface ChaosKommandoLayoutModel {
   weapons: ChaosKommandoWeaponOptionModel[];
   onMoveChange: (moveX: number, moveY: number) => void;
   onAimChange: (aimX: number, aimY: number) => void;
+  onBackflip?: () => void;
+  onEndTurn?: () => void;
+  fuseSeconds?: number;
+  onSetFuse?: (seconds: number) => void;
+  fireDisabled?: boolean;
   onJump: () => void;
   onFireStart: () => void;
   onFireEnd: () => void;
@@ -120,7 +125,7 @@ function buildStats(state: ChaosKommandoState | null, en: boolean): LayoutStat[]
   }
 
   return [
-    { label: en ? "Time" : "Zeit", value: formatSeconds(state.turn.turnEndsAt), highlighted: true }
+    { label: en ? "Time" : "Zeit", value: state.turn.resolvingShot ? (state.turn.retreatEndsAt !== null && Date.now() < state.turn.retreatEndsAt ? formatSeconds(state.turn.retreatEndsAt) : "—") : formatSeconds(state.turn.turnEndsAt), highlighted: true }
   ];
 }
 
@@ -142,30 +147,22 @@ export function buildChaosKommandoControllerModel(
     currentPlayer !== null &&
     !currentPlayer.eliminated &&
     !gameState.winnerPlayerId;
-  const disabled = !isLocalPlayersTurn;
+  const now = Date.now();
+  const preparing = gameState !== null && now < gameState.turn.prepEndsAt;
+  const retreating = gameState?.turn.resolvingShot && gameState.turn.retreatEndsAt !== null && now < gameState.turn.retreatEndsAt;
+  const resolving = Boolean(gameState?.turn.resolvingShot && !retreating);
+  const disabled = !isLocalPlayersTurn || preparing || resolving || !activeMercenary?.alive;
+  const fireDisabled = disabled || Boolean(gameState?.turn.hasFired) || (!activeMercenary?.grounded && !gameState?.rope);
+  const status = preparing ? (en ? "Get ready" : "Bereitmachen")
+    : retreating ? (en ? "Retreat!" : "Rueckzug!")
+    : resolving ? (en ? "Resolving consequences" : "Folgen abwarten")
+    : isLocalPlayersTurn ? (en ? "Your turn" : "Dein Zug")
+    : (en ? "Watching" : "Zuschauen");
   const title = currentPlayer?.name ? `${currentPlayer.name} Kommando` : "Chaos-Kommando";
-  const subtitle = gameState?.winnerName
-    ? en ? `${gameState.winnerName} wins the battle` : `${gameState.winnerName} gewinnt die Schlacht`
-    : isLocalPlayersTurn
-      ? en
-        ? "Switch between command and controls, then line up the shot"
-        : "Zwischen Kommando und Steuerung wechseln, dann sauber Druck machen"
-      : activeMercenary
-        ? en ? `${activeMercenary.playerName} is up` : `${activeMercenary.playerName} ist gerade dran`
-        : en ? "Waiting for the next turn" : "Warte auf den naechsten Zug";
-  const helperText = gameState?.winnerName
-    ? en ? "Ready up again after the round for the next match." : "Druecke nach der Runde wieder auf bereit fuer das naechste Match."
-    : isLocalPlayersTurn
-      ? currentWeapon?.fireMode === "instant"
-        ? en
-          ? "In command mode, choose mercenary and weapon. In controls, pistols and similar weapons fire on press."
-          : "Im Kommando-Modus Soeldner und Waffe festlegen. In der Steuerung feuern Pistole & Co. direkt beim Druck."
-        : en
-          ? "In command mode, choose mercenary and weapon. In controls, hold to charge and release to fire."
-          : "Im Kommando-Modus Soeldner und Waffe festlegen. In der Steuerung Schuss halten, aufladen und gezielt loesen."
-      : en
-        ? "You can watch the match. Your controls unlock once your team is up."
-        : "Du kannst das Match verfolgen. Sobald dein Team dran ist, werden die Controls freigeschaltet.";
+  const subtitle = status;
+  const helperText = en
+    ? "Walk, aim, attack once. Then 3 seconds to retreat. Hop forward for distance; backflip for height. Injury ends your turn."
+    : "Laufen, zielen, einmal angreifen. Danach 3 Sekunden Rueckzug. Vorwaertssprung fuer Weite, Salto fuer Hoehe. Schaden beendet deinen Zug.";
   const fireMode = currentWeapon?.fireMode ?? "charged";
   const fireHint =
     currentWeapon?.description ??
@@ -180,9 +177,14 @@ export function buildChaosKommandoControllerModel(
     helperText,
     language,
     disabled,
+    fireDisabled,
+    fuseSeconds: currentWeapon?.fuseMs !== null && currentWeapon?.fuseMs !== undefined && currentWeapon.id !== "dynamit" ? gameState?.turn.fuseSeconds : undefined,
+    onSetFuse: (seconds) => context.onInput({ type: "set-fuse", playerId, seconds, sentAt: Date.now() }),
+    onBackflip: () => context.onInput(createChaosKommandoJumpInput(playerId, "backflip")),
+    onEndTurn: gameState?.turn.hasFired ? undefined : () => context.onInput({ type: "end-turn", playerId, sentAt: Date.now() }),
     accentColor: currentPlayer?.color ?? context.state.player?.color ?? "#22d3ee",
     resetKey: `${context.state.game?.roundNumber ?? 0}:${context.state.game?.phase ?? "idle"}:${gameState?.turn.activeMercenaryId ?? "none"}`,
-    countdownEndsAtMs: gameState?.turn.turnEndsAt,
+    countdownEndsAtMs: retreating ? gameState?.turn.retreatEndsAt ?? undefined : resolving || preparing ? undefined : gameState?.turn.turnEndsAt,
     stats: buildStats(gameState, en),
     turnOwnerLabel: activeMercenary
       ? `${activeMercenary.playerName} | ${activeMercenary.name}`
@@ -221,7 +223,7 @@ export function buildChaosKommandoControllerModel(
           iconPath: weapon.iconPath,
           accentColor: weapon.accentColor,
           selected: weapon.id === gameState.turn.currentWeaponId,
-          disabled: ammo <= 0 || !isLocalPlayersTurn,
+          disabled: ammo <= 0 || !isLocalPlayersTurn || Boolean(gameState.turn.hasFired),
           onSelect: () => {
             if (!playerId) {
               return;

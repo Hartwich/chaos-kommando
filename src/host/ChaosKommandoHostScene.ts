@@ -37,13 +37,17 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
   private headerText?: Phaser.GameObjects.Text;
   private infoText?: Phaser.GameObjects.Text;
   private bannerText?: Phaser.GameObjects.Text;
-
+  private hudGraphics?: Phaser.GameObjects.Graphics;
+  private hudCamera?: Phaser.Cameras.Scene2D.Camera;
+  private teamLabels: Phaser.GameObjects.Text[] = [];
   constructor() {
     super("ChaosKommandoHostScene");
   }
 
   preload(): void {
     preloadChaosKommandoCharacterAssets(this);
+    this.load.image("chaos-coastal-background", "/chaos-kommando/environment/v2/coastal-background.png");
+    this.load.image("chaos-sandstone", "/chaos-kommando/environment/v2/sandstone.png");
   }
 
   create(): void {
@@ -51,10 +55,11 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
 
     this.cameras.main.setBackgroundColor(tokens().color.background);
     this.renderState = createChaosKommandoRenderState(this);
+    this.hudGraphics = this.add.graphics().setDepth(39).setScrollFactor(0);
     this.headerText = this.add
-      .text(34, 24, "", {
+      .text(24, 14, "", {
         fontFamily: hostTheme.titleFont,
-        fontSize: "40px",
+        fontSize: "26px",
         color: tokens().color.text,
         stroke: tokens().color.surface,
         strokeThickness: 5
@@ -62,9 +67,9 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
       .setDepth(40)
       .setScrollFactor(0);
     this.infoText = this.add
-      .text(34, 78, "", {
+      .text(this.scale.width - 24, 15, "", {
         fontFamily: hostTheme.titleFont,
-        fontSize: "44px",
+        fontSize: "24px",
         color: "#fde68a",
         stroke: tokens().color.surface,
         strokeThickness: 5,
@@ -73,7 +78,7 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
       })
       .setDepth(40)
       .setScrollFactor(0);
-
+    this.infoText.setOrigin(1, 0);
     this.bannerText = this.add
       .text(this.scale.width / 2, this.scale.height * 0.34, "", {
         fontFamily: hostTheme.titleFont,
@@ -87,7 +92,7 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
       .setDepth(60)
       .setScrollFactor(0)
       .setVisible(false);
-
+    this.hudCamera = this.cameras.add(0, 0, this.scale.width, this.scale.height, false, "hud");
     this.scale.on(Phaser.Scale.Events.RESIZE, this.handleResize, this);
 
     this.unsubscribe = client.subscribe((state) => {
@@ -120,6 +125,9 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
       this.headerText = undefined;
       this.infoText?.destroy();
       this.infoText = undefined;
+      this.hudGraphics?.destroy();
+      this.teamLabels.forEach((label) => label.destroy());
+      this.teamLabels = [];
       this.bannerText?.destroy();
       this.bannerText = undefined;
     });
@@ -140,6 +148,16 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
     }
 
     this.syncOverlay();
+    this.syncHudCamera();
+  }
+
+  private syncHudCamera(): void {
+    if (!this.hudCamera) return;
+    this.hudCamera.setSize(this.scale.width, this.scale.height);
+    const hudObjects = [this.hudGraphics, this.headerText, this.infoText, this.bannerText, ...this.teamLabels]
+      .filter((object): object is Phaser.GameObjects.Graphics | Phaser.GameObjects.Text => Boolean(object));
+    this.cameras.main.ignore(hudObjects);
+    this.hudCamera.ignore(this.children.list.filter((object) => !hudObjects.includes(object as Phaser.GameObjects.Text)));
   }
 
   /** Namensbanner der Kameraregie mit kurzem Ein- und Ausblenden. */
@@ -189,7 +207,14 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
     const nowMs = Date.now();
     // Waehrend der Kamerafahrt steht die Uhr; sie startet erst mit dem Zug.
     const preparing = nowMs < gameState.turn.prepEndsAt;
-    const turnSeconds = Math.max(0, Math.ceil((gameState.turn.turnEndsAt - nowMs) / 1000));
+    const en = gameState.language === "en";
+    const retreating = gameState.turn.resolvingShot && gameState.turn.retreatEndsAt !== null && nowMs < gameState.turn.retreatEndsAt;
+    const deadline = retreating ? gameState.turn.retreatEndsAt! : gameState.turn.turnEndsAt;
+    const turnSeconds = Math.max(0, Math.ceil((deadline - nowMs) / 1000));
+    const phaseLabel = preparing ? (en ? "Get ready…" : "Bereitmachen…")
+      : retreating ? `${en ? "Retreat" : "Rueckzug"} · ${turnSeconds}s`
+      : gameState.turn.resolvingShot ? (en ? "Resolving consequences…" : "Folgen abwarten…")
+      : `${turnSeconds}s · ${gameState.wind.label}`;
     const headline = gameState.winnerName
       ? gameState.winnerName
       : currentPlayer
@@ -197,10 +222,29 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
           ? `${currentPlayer.name} · ${activeMercenary.name}`
           : currentPlayer.name
         : "Chaos-Kommando";
-
-    this.headerText.setText(headline);
+    this.headerText.setText(`CHAOS-KOMMANDO | ${headline}`);
+    this.infoText.setPosition(this.scale.width - 24, 16);
+    const hud = this.hudGraphics;
+    if (hud) {
+      hud.clear().fillStyle(0x10283c, 0.94).fillRect(0, 0, this.scale.width, 58);
+      hud.fillStyle(0x10283c, 0.92).fillRect(0, this.scale.height - 54, this.scale.width, 54);
+      const width = this.scale.width / Math.max(1, gameState.players.length);
+      gameState.players.forEach((player, index) => {
+        const hp = player.mercenaries.reduce((sum, unit) => sum + unit.hp, 0);
+        const maximum = player.mercenaries.reduce((sum, unit) => sum + unit.maxHp, 0);
+        const x = index * width + 14;
+        const y = this.scale.height - 42;
+        const color = Phaser.Display.Color.HexStringToColor(player.color).color;
+        hud.fillStyle(color, player.eliminated ? 0.18 : 0.85).fillRect(x, y + 26, (width - 28) * hp / maximum, 6);
+        if (!this.teamLabels[index]) this.teamLabels[index] = this.add.text(x, y, "", {
+          fontFamily: hostTheme.bodyFont, fontSize: "17px", fontStyle: "bold", color: "#fff5df"
+        }).setDepth(40).setScrollFactor(0);
+        this.teamLabels[index].setPosition(x, y).setText(`${player.name}  ${hp}`).setAlpha(player.eliminated ? 0.4 : 1);
+        this.teamLabels[index].setColor(player.playerId === gameState.turn.currentPlayerId ? player.color : "#fff5df");
+      });
+    }
     this.infoText.setText(
-      gameState.winnerName ? "" : preparing ? "Bereitmachen ..." : `${turnSeconds}s`
+      gameState.winnerName ? "" : phaseLabel
     );
   }
 }

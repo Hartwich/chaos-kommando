@@ -1,4 +1,5 @@
 import Phaser from "phaser";
+import { ChaosKommandoBattleEffects } from "./ChaosKommandoBattleEffects.js";
 import type {
   ChaosKommandoCraterState,
   ChaosKommandoMercenaryState,
@@ -54,6 +55,8 @@ interface TerrainLike {
 
 export interface ChaosKommandoRenderState {
   skyGraphics: Phaser.GameObjects.Graphics;
+  background: Phaser.GameObjects.Image | null;
+  battleEffects: ChaosKommandoBattleEffects;
   terrainImage: Phaser.GameObjects.Image | null;
   terrainSignature: string;
   waterGraphics: Phaser.GameObjects.Graphics;
@@ -110,10 +113,10 @@ interface CameraDirector {
 }
 
 const cameraPhaseDurationsMs = {
-  overview: 1_600,
-  casualty: 1_400,
+  overview: 900,
+  casualty: 1000,
   /** Dreifache Jubeldauer, wie gewuenscht. */
-  cheer: 4_500,
+  cheer: 1400,
   crate: 1_300,
   banner: 1_500,
   calm: 1_200
@@ -178,6 +181,8 @@ export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKomman
 
   return {
     skyGraphics,
+    background: scene.textures.exists("chaos-coastal-background") ? scene.add.image(0, 0, "chaos-coastal-background").setOrigin(0).setDepth(-59) : null,
+    battleEffects: new ChaosKommandoBattleEffects(scene),
     terrainImage: null,
     terrainSignature: "",
     waterGraphics,
@@ -196,6 +201,8 @@ export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKomman
 
 export function destroyChaosKommandoRenderState(renderState: ChaosKommandoRenderState): void {
   renderState.skyGraphics.destroy();
+  renderState.background?.destroy();
+  renderState.battleEffects.destroy();
   renderState.terrainImage?.destroy();
   renderState.terrainImage = null;
   renderState.waterGraphics.destroy();
@@ -251,6 +258,7 @@ export function renderChaosKommandoIdleFrame(
   );
   applyCamera(scene, renderState, idleWorld.width, idleWorld.height);
   drawSky(renderState.skyGraphics, idleWorld.width, idleWorld.height, idleWorld.waterlineY, timeMs, 1, 1, "klapperkueste");
+  renderState.background?.setDisplaySize(idleWorld.width, idleWorld.height);
   syncTerrainTexture(scene, renderState, idleWorld, idleTerrainTextureKey, "klapperkueste");
   drawWater(
     renderState.waterGraphics,
@@ -299,6 +307,8 @@ export function renderChaosKommandoFrame(
     state.wind.direction,
     state.terrain.mapId
   );
+  renderState.background?.setDisplaySize(state.terrain.width, state.terrain.height);
+  renderState.battleEffects.update(state, nowMs);
   syncTerrainTexture(scene, renderState, state.terrain, terrainTextureKey, state.terrain.mapId);
   drawWater(
     renderState.waterGraphics,
@@ -615,13 +625,13 @@ function resolveCameraTarget(
     };
   }
 
-  // Aiming: close-up on the active worm, biased toward the crosshair.
+  // Tactical framing keeps neighbouring islands and enemy positions visible.
   const activeCrosshair = !state.turn.hasFired ? resolveCrosshairPoint(state) : null;
   const chargeRatio = resolveChargeRatio(state);
   const closeZoom = clamp(
-    Math.min(scene.scale.width / 940, scene.scale.height / 600) * (1 - chargeRatio * 0.16),
+    fitZoom * (1.16 - chargeRatio * 0.08),
     fitZoom,
-    1.32
+    1.05
   );
 
   if (!activeMercenary) {
@@ -640,8 +650,8 @@ function resolveCameraTarget(
     : activeMercenary.y - 40;
 
   return {
-    centerX: biasX,
-    centerY: biasY,
+    centerX: Phaser.Math.Linear(worldWidth / 2, biasX, 0.45),
+    centerY: Phaser.Math.Linear(worldHeight / 2 + 20, biasY, 0.32),
     zoom: closeZoom
   };
 }
@@ -776,9 +786,7 @@ function syncTerrainTexture(
 
     texture = recreated;
   }
-
-  paintTerrainCanvas(texture, terrain, theme);
-
+  paintTerrainCanvas(texture, terrain, theme, scene.textures.exists("chaos-sandstone") ? scene.textures.get("chaos-sandstone").getSourceImage() as HTMLImageElement : undefined);
   if (!renderState.terrainImage || renderState.terrainImage.texture.key !== textureKey) {
     renderState.terrainImage?.destroy();
     renderState.terrainImage = scene.add.image(0, 0, textureKey).setOrigin(0, 0).setDepth(-10);
@@ -835,7 +843,8 @@ function tracePlatformCap(ctx: CanvasRenderingContext2D, platform: ChaosKommando
 function paintTerrainCanvas(
   texture: Phaser.Textures.CanvasTexture,
   terrain: TerrainLike,
-  theme: TerrainTheme
+  theme: TerrainTheme,
+  rockImage?: HTMLImageElement
 ): void {
   const ctx = texture.getContext();
   const { width, height } = terrain;
@@ -859,7 +868,10 @@ function paintTerrainCanvas(
 
   ctx.save();
   ctx.clip();
-
+  if (rockImage) {
+    const pattern = ctx.createPattern(rockImage, "repeat");
+    if (pattern) { pattern.setTransform(new DOMMatrix().scale(0.42)); ctx.fillStyle = pattern; ctx.fillRect(0, 0, width, height); }
+  }
   // 2. Gesteinsschichten: leicht wellige Baender quer durch die Erde.
   for (let band = 0; band < 7; band += 1) {
     const baseY = 470 + band * 108 + terrainNoise(band * 7.3) * 40;
@@ -880,6 +892,7 @@ function paintTerrainCanvas(
     ctx.globalAlpha = band % 2 === 0 ? 0.18 : 0.12;
     ctx.fill();
   }
+
   ctx.globalAlpha = 1;
 
   // 3. Kiesel und Einschluesse.
@@ -911,6 +924,7 @@ function paintTerrainCanvas(
       ctx.fill();
     }
   }
+
   ctx.globalAlpha = 1;
 
   // 4. Duenne helle Krume direkt unter der Grasnarbe.
@@ -920,11 +934,13 @@ function paintTerrainCanvas(
   ctx.beginPath();
   traceTerrainOutline(ctx, terrain, 13);
   ctx.stroke();
+
   for (const platform of terrain.platforms) {
     ctx.beginPath();
     tracePlatformCap(ctx, { ...platform, ry: platform.ry - 12 });
     ctx.stroke();
   }
+
   ctx.globalAlpha = 1;
   ctx.restore();
 
@@ -1209,10 +1225,9 @@ function drawWater(
 ): void {
   const phase = (timeMs / 1000) * (0.8 + windStrength) * windDirection;
   const amplitude = 8 + windStrength * 6;
-  const deepColor = suddenDeath ? 0x3a0d24 : 0x082942;
-  const crestColor = suddenDeath ? 0xfb7185 : 0x7dd3fc;
-  const frontColor = suddenDeath ? 0x59102f : 0x0a3b5c;
-
+  const deepColor = suddenDeath ? 0x3a0d24 : 0x087f9c;
+  const crestColor = suddenDeath ? 0xfb7185 : 0xc2fff2;
+  const frontColor = suddenDeath ? 0x59102f : 0x089fb1;
   backGraphics.clear();
   backGraphics.fillStyle(deepColor, 0.9);
   backGraphics.beginPath();
@@ -1286,14 +1301,41 @@ function drawExplosionBurst(
   explosion: ChaosKommandoState["explosions"][number],
   ageMs: number
 ): void {
-  const progress = clamp(ageMs / 980, 0, 1);
+  const bullet = ["plunder-pistole", "minigun", "konfetti-schrot", "baseball-schlaeger"].includes(explosion.sourceWeaponId);
+  if (bullet) {
+    const fade = Math.max(0, 1 - ageMs / 250);
+    graphics.lineStyle(3, 0xfff4a8, fade);
+    for (let index = 0; index < 7; index++) {
+      const angle = index * Math.PI * 2 / 7;
+      graphics.lineBetween(explosion.x + Math.cos(angle) * 3, explosion.y + Math.sin(angle) * 3,
+        explosion.x + Math.cos(angle) * (10 + ageMs * 0.08), explosion.y + Math.sin(angle) * (10 + ageMs * 0.08));
+    }
+    return;
+  }
+  const progress = clamp(ageMs / 1600, 0, 1);
   const fade = 1 - progress;
   const color = toColorNumber(explosion.color, 0xf59e0b);
   const shockRadius = explosion.radius * (0.22 + progress * 1.04);
   const coreRadius = explosion.radius * (0.16 + fade * 0.24);
   const seed = hashString(explosion.id);
-
-  graphics.fillStyle(color, 0.09 + fade * 0.18);
+  // Ejected terrain fragments follow ballistic arcs instead of expanding discs.
+  const seconds = ageMs / 1000;
+  for (let index = 0; index < 22; index++) {
+    const angle = -Math.PI + index / 22 * Math.PI + (seed % 13) * 0.02;
+    const speed = 90 + (index * 43 % 180) + explosion.radius * 0.6;
+    const x = explosion.x + Math.cos(angle) * speed * seconds;
+    const y = explosion.y + Math.sin(angle) * speed * seconds + 250 * seconds * seconds;
+    graphics.fillStyle(index % 3 === 0 ? 0xf6c571 : 0x815334, fade * 0.9);
+    graphics.fillTriangle(x - 3, y + 3, x + 5, y + 1, x, y - 5);
+  }
+  for (let index = 0; index < 9; index++) {
+    const angle = index * Math.PI * 2 / 9;
+    const spread = explosion.radius * (0.18 + progress * 0.32);
+    graphics.fillStyle(progress < 0.18 ? (index % 2 ? 0xff9b26 : 0xffe078) : 0x493d39, fade * 0.46);
+    graphics.fillCircle(explosion.x + Math.cos(angle) * spread, explosion.y + Math.sin(angle) * spread - seconds * 55,
+      explosion.radius * (0.12 + progress * 0.12));
+  }
+  graphics.fillStyle(color, fade * 0.18);
   graphics.fillCircle(explosion.x, explosion.y, shockRadius);
   graphics.lineStyle(5, color, 0.18 + fade * 0.46);
   graphics.strokeCircle(explosion.x, explosion.y, shockRadius);
@@ -1985,7 +2027,7 @@ function syncNameLabels(
 
       label
         .setVisible(true)
-        .setText(mercenary.name)
+        .setText(`${mercenary.playerName} | ${Math.ceil(mercenary.hp)}`)
         .setColor(mercenary.teamColor || tokens().color.text)
         .setPosition(mercenary.x, mercenary.y - mercenary.radius * 3.65);
     }

@@ -66,6 +66,9 @@ export interface ChaosKommandoCharacterMemory {
   /** Gehaltener Wurfframe 0..16. */
   throwFrame: number;
   lastUpdateMs: number;
+  previousX: number;
+  walkedDistance: number;
+  airborneStartedMs: number;
   torsoVariant: MarshmallowTorsoVariant;
   headbandVariant: MarshmallowHeadbandVariantId;
   phaseOffset: number;
@@ -140,7 +143,7 @@ export interface ChaosKommandoCharacterPose {
   scaleX: number;
   scaleY: number;
   shearX: number;
-
+  bodyRotation: number;
   torsoVariant: MarshmallowTorsoVariant;
   torsoWidth: number;
   torsoHeight: number;
@@ -199,6 +202,9 @@ export function createChaosKommandoCharacterMemory(
     frame: hash % MARSHMALLOW_FRAME_COUNT,
     throwFrame: 0,
     lastUpdateMs: nowMs,
+    previousX: mercenary.x,
+    walkedDistance: 0,
+    airborneStartedMs: nowMs,
     torsoVariant: resolveTorsoVariantForId(mercenary.id),
     headbandVariant: resolveHeadbandVariant(teamColor),
     phaseOffset: (hash % 997) / 997
@@ -225,7 +231,7 @@ export function resolveChaosKommandoCharacterPose({
   const anchorX = mercenary.x;
 
   const visual = chaosKommandoWeaponVisuals[state.turn.currentWeaponId];
-  const aiming = isActive && mercenary.alive && !state.turn.hasFired && !state.turn.resolvingShot;
+  const aiming = isActive && mercenary.alive && (mercenary.grounded || state.rope?.mercenaryId === mercenary.id) && !state.turn.hasFired && !state.turn.resolvingShot;
   const recoiling = memory.recoilUntilMs > nowMs;
   const throwing = recoiling && chaosKommandoWeaponVisuals[memory.recoilWeaponId].posture === "throw";
   const displayedWeaponId = aiming
@@ -274,7 +280,9 @@ export function resolveChaosKommandoCharacterPose({
     nowMs,
     torsoVariant: memory.torsoVariant
   });
-
+  pose.bodyRotation = !mercenary.grounded && mercenary.jumpKind === "backflip"
+    ? (mercenary.facing === "right" ? -1 : 1) * Math.PI * 2 * clamp((nowMs - memory.airborneStartedMs) / 980, 0, 1)
+    : 0;
   pose.expression = expression;
   pose.alpha = mercenary.alive ? 1 : 0.72;
   applyTransientOffsets(pose, mercenary, state, nowMs, memory, scale);
@@ -343,8 +351,11 @@ function advanceFrame(
       : motionState === "joy"
         ? 20
         : MARSHMALLOW_DEFAULT_FPS;
-  memory.frame = (memory.frame + (deltaMs * fps) / 1_000) % MARSHMALLOW_FRAME_COUNT;
-
+  if (motionState === "walk" || motionState === "walkRight") {
+    memory.walkedDistance += Math.min(12, Math.abs(mercenary.x - memory.previousX));
+    memory.frame = memory.walkedDistance / (mercenary.radius * 2.6) * MARSHMALLOW_FRAME_COUNT % MARSHMALLOW_FRAME_COUNT;
+  } else memory.frame = (memory.frame + (deltaMs * fps) / 1_000) % MARSHMALLOW_FRAME_COUNT;
+  memory.previousX = mercenary.x;
   if (motionState === "jump" || motionState === "longJump") {
     // Der Sprungbogen wird aus der echten Vertikalgeschwindigkeit abgeleitet,
     // damit der Scheitel exakt auf Frame 8 liegt.
@@ -488,8 +499,8 @@ function buildPose({
         : Math.sin(phase);
   const warpAmount = (isWalk || isJump || isLongJump || isJoy ? 0.032 : 0.018) * profile.warp;
   const stride =
-    (isWalk ? step * 25 * scale : isIdle ? Math.sin(phase) * 1.5 * scale : 0) * profile.legMotion;
-  const walkBounce = isWalk ? (1 - Math.cos(phase * 2)) * 2.2 * scale : 0;
+    (isWalk ? step * 72 * scale : isIdle ? Math.sin(phase) * 1.5 * scale : 0) * profile.legMotion;
+  const walkBounce = isWalk ? (1 - Math.cos(phase * 2)) * 9 * scale : 0;
   const idleBob = isIdle ? Math.sin(phase) * 0.8 * scale : 0;
   const joyBounce = isJoy ? (1 - Math.cos(phase * 2)) * 4.5 * scale : 0;
   const jumpLift = jumpArc * (isLongJump ? 72 : 92) * scale;
@@ -504,17 +515,17 @@ function buildPose({
     groundY - profile.torsoHeight * 145 * scale - walkBounce - idleBob - joyBounce - jumpLift - recoilY;
   const scaleX = 1 + compression * warpAmount;
   const scaleY = 1 - compression * warpAmount * 0.92;
-  const shearX = (isWalk ? step * 0.012 : Math.sin(phase) * 0.004) * profile.warp;
+  const shearX = (isWalk ? step * 0.06 : Math.sin(phase) * 0.004) * profile.warp;
   const limbDistance = Math.max(0, profile.limbGap * 162 - jumpArc * 12) * scale;
   const leftLift =
     (isWalk
-      ? Math.max(0, step) * 20 * profile.legMotion
+      ? Math.max(0, step) * 42 * profile.legMotion
       : isJoy
         ? Math.max(0, Math.sin(phase * 2)) * 6 * profile.legMotion
         : jumpArc * 88) * scale;
   const rightLift =
     (isWalk
-      ? Math.max(0, -step) * 20 * profile.legMotion
+      ? Math.max(0, -step) * 42 * profile.legMotion
       : isJoy
         ? Math.max(0, -Math.sin(phase * 2)) * 6 * profile.legMotion
         : jumpArc * 88) * scale;
@@ -552,6 +563,7 @@ function buildPose({
     scaleX,
     scaleY,
     shearX,
+    bodyRotation: 0,
     torsoVariant,
     torsoWidth,
     torsoHeight,
@@ -942,8 +954,8 @@ function applyTransientOffsets(
     const progress = progressBetween(nowMs, memory.landingStartedAtMs, memory.landingUntilMs);
     const squash = Math.sin(progress * Math.PI) * (1 - progress * 0.35);
     pose.bodyBottom += squash * 8 * scale;
-    pose.scaleX *= 1 + squash * 0.055;
-    pose.scaleY *= 1 - squash * 0.07;
+    pose.scaleX *= 1 + squash * 0.2;
+    pose.scaleY *= 1 - squash * 0.18;
   }
 
   if (state.turn.chargeStartedAt !== null && mercenary.id === state.turn.activeMercenaryId) {
@@ -976,6 +988,7 @@ function updateTransientAnimationMemory(
   nowMs: number,
   memory: ChaosKommandoCharacterMemory
 ): void {
+  if (memory.previousGrounded && !mercenary.grounded) memory.airborneStartedMs = nowMs;
   if (mercenary.hp < memory.previousHp && mercenary.alive) {
     memory.hitStartedAtMs = nowMs;
     memory.hitUntilMs = nowMs + 340;

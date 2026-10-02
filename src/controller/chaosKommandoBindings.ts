@@ -39,9 +39,10 @@ export function createChaosKommandoAimInput(playerId: string, aimX: number, aimY
   };
 }
 
-export function createChaosKommandoJumpInput(playerId: string) {
+export function createChaosKommandoJumpInput(playerId: string, kind: "forward" | "backflip" = "forward") {
   return {
     type: "jump" as const,
+    kind,
     playerId,
     sentAt: Date.now()
   };
