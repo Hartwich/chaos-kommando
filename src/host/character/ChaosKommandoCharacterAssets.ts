@@ -1,4 +1,4 @@
-import Phaser from "phaser";
+import type Phaser from "phaser";
 import type { ChaosKommandoWeaponId } from "../../protocol.js";
 import {
   marshmallowHeadbandVariants,
@@ -163,6 +163,7 @@ export interface ChaosKommandoWeaponVisual {
   primaryGrip: ChaosKommandoGripPoint;
   secondaryGrip: ChaosKommandoGripPoint | null;
   rotationOffsetRad: number;
+  muzzle: ChaosKommandoGripPoint;
 }
 
 const degrees = (value: number): number => (value * Math.PI) / 180;
@@ -228,7 +229,8 @@ function weapon(
     sizeInRadii,
     primaryGrip: entry.primaryGrip,
     secondaryGrip: entry.secondaryGrip,
-    rotationOffsetRad: degrees(rotationOffsetDeg)
+    rotationOffsetRad: degrees(rotationOffsetDeg),
+    muzzle: { x: 0.95, y: handling === "pistol" ? 0.28 : 0.45 }
   };
 }
 

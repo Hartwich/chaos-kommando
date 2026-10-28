@@ -76,7 +76,12 @@ export interface ChaosKommandoEndTurnInput extends PlayerInput {
   type: "end-turn";
 }
 
+export interface ChaosKommandoRopeInput extends PlayerInput { type: "rope:toggle" }
+export interface ChaosKommandoReelInput extends PlayerInput { type: "rope:reel"; direction: -1 | 0 | 1 }
+
 export type ChaosKommandoInput =
+  | ChaosKommandoRopeInput
+  | ChaosKommandoReelInput
   | ChaosKommandoSetFuseInput
   | ChaosKommandoEndTurnInput
   | ChaosKommandoMoveInput
@@ -124,7 +129,7 @@ export interface ChaosKommandoMercenaryState {
   maxHp: number;
   alive: boolean;
   grounded: boolean;
-  jumpKind: "forward" | "backflip" | null;
+  jumpKind: "forward" | "backflip" | "rope" | null;
   facing: "left" | "right";
   aimAngleRad: number;
   ammo: Record<ChaosKommandoWeaponId, number>;
@@ -218,6 +223,8 @@ export interface ChaosKommandoPlatformState {
   rx: number;
   /** Vertical radius. */
   ry: number;
+  /** Optional normalized rock contour, relative to x/y and rx/ry. */
+  contour?: { x: number; y: number }[];
 }
 
 export interface ChaosKommandoTerrainState {
@@ -266,6 +273,7 @@ export interface ChaosKommandoRopeState {
   anchorY: number;
   /** Aktuelle Seillaenge in Pixeln. */
   length: number;
+  reelInput: -1 | 0 | 1;
 }
 
 export interface ChaosKommandoWindState {
@@ -281,6 +289,8 @@ export interface ChaosKommandoState {
   turn: ChaosKommandoTurnState;
   weapons: ChaosKommandoWeaponDefinition[];
   projectiles: ChaosKommandoProjectileState[];
+  /** Bounded authoritative attack events; survives a projectile disappearing between snapshots. */
+  weaponActions: ChaosKommandoWeaponAction[];
   explosions: ChaosKommandoExplosionState[];
   gravestones: ChaosKommandoGravestoneState[];
   mines: ChaosKommandoMineState[];
@@ -295,4 +305,14 @@ export interface ChaosKommandoState {
   cameraFocusX: number;
   cameraFocusY: number;
   actionLog: string[];
+}
+
+export interface ChaosKommandoWeaponAction {
+  id: string;
+  mercenaryId: string;
+  weaponId: ChaosKommandoWeaponId;
+  x: number;
+  y: number;
+  angleRad: number;
+  firedAt: number;
 }

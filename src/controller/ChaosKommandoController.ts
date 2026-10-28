@@ -61,6 +61,11 @@ interface ChaosKommandoLayoutModel {
   weapons: ChaosKommandoWeaponOptionModel[];
   onMoveChange: (moveX: number, moveY: number) => void;
   onAimChange: (aimX: number, aimY: number) => void;
+  onRopeToggle?: () => void;
+  onReelChange?: (direction: -1 | 0 | 1) => void;
+  ropeAttached?: boolean;
+  ropeReeling?: boolean;
+  ropeDisabled?: boolean;
   onBackflip?: () => void;
   onEndTurn?: () => void;
   fuseSeconds?: number;
@@ -74,6 +79,7 @@ interface ChaosKommandoLayoutModel {
 interface ControllerGameRenderContext {
   state: {
     preferredLanguage?: SupportedLanguage;
+    getServerTime?: () => number;
     room?: {
       code?: string;
       language?: SupportedLanguage;
@@ -91,12 +97,12 @@ interface ControllerGameRenderContext {
   onInput(input: unknown): void;
 }
 
-function formatSeconds(untilMs: number | undefined): string {
+function formatSeconds(untilMs: number | undefined, now: number): string {
   if (!untilMs) {
     return "-";
   }
 
-  return `${Math.max(0, Math.ceil((untilMs - Date.now()) / 1000))}s`;
+  return `${Math.max(0, Math.ceil((untilMs - now) / 1000))}s`;
 }
 
 function resolveCurrentPlayer(state: ChaosKommandoState | null, playerId: string | undefined) {
@@ -119,13 +125,13 @@ function resolveActiveMercenary(state: ChaosKommandoState | null) {
   return null;
 }
 
-function buildStats(state: ChaosKommandoState | null, en: boolean): LayoutStat[] {
+function buildStats(state: ChaosKommandoState | null, en: boolean, now: number): LayoutStat[] {
   if (!state) {
     return [];
   }
 
   return [
-    { label: en ? "Time" : "Zeit", value: state.turn.resolvingShot ? (state.turn.retreatEndsAt !== null && Date.now() < state.turn.retreatEndsAt ? formatSeconds(state.turn.retreatEndsAt) : "—") : formatSeconds(state.turn.turnEndsAt), highlighted: true }
+    { label: en ? "Time" : "Zeit", value: state.turn.resolvingShot ? (state.turn.retreatEndsAt !== null && now < state.turn.retreatEndsAt ? formatSeconds(state.turn.retreatEndsAt, now) : "—") : formatSeconds(state.turn.turnEndsAt, now), highlighted: true }
   ];
 }
 
@@ -147,10 +153,11 @@ export function buildChaosKommandoControllerModel(
     currentPlayer !== null &&
     !currentPlayer.eliminated &&
     !gameState.winnerPlayerId;
-  const now = Date.now();
+  const now = context.state.getServerTime?.() ?? Date.now();
   const preparing = gameState !== null && now < gameState.turn.prepEndsAt;
   const retreating = gameState?.turn.resolvingShot && gameState.turn.retreatEndsAt !== null && now < gameState.turn.retreatEndsAt;
-  const resolving = Boolean(gameState?.turn.resolvingShot && !retreating);
+  const expired = Boolean(gameState && !gameState.turn.resolvingShot && now >= gameState.turn.turnEndsAt);
+  const resolving = expired || Boolean(gameState?.turn.resolvingShot && !retreating);
   const disabled = !isLocalPlayersTurn || preparing || resolving || !activeMercenary?.alive;
   const fireDisabled = disabled || Boolean(gameState?.turn.hasFired) || (!activeMercenary?.grounded && !gameState?.rope);
   const status = preparing ? (en ? "Get ready" : "Bereitmachen")
@@ -161,8 +168,8 @@ export function buildChaosKommandoControllerModel(
   const title = currentPlayer?.name ? `${currentPlayer.name} Kommando` : "Chaos-Kommando";
   const subtitle = status;
   const helperText = en
-    ? "Walk, aim, attack once. Then 3 seconds to retreat. Hop forward for distance; backflip for height. Injury ends your turn."
-    : "Laufen, zielen, einmal angreifen. Danach 3 Sekunden Rueckzug. Vorwaertssprung fuer Weite, Salto fuer Hoehe. Schaden beendet deinen Zug.";
+    ? "Hook grips ceilings and overhangs. Hold Pull up; move to swing, jump to launch off. One attack, then 3 seconds to retreat."
+    : "Haken greift Decken und Ueberhaenge. Hochziehen halten, Stick zum Schwingen, Sprung zum Abspringen. Ein Angriff, dann 3 Sekunden Rueckzug.";
   const fireMode = currentWeapon?.fireMode ?? "charged";
   const fireHint =
     currentWeapon?.description ??
@@ -180,12 +187,17 @@ export function buildChaosKommandoControllerModel(
     fireDisabled,
     fuseSeconds: currentWeapon?.fuseMs !== null && currentWeapon?.fuseMs !== undefined && currentWeapon.id !== "dynamit" ? gameState?.turn.fuseSeconds : undefined,
     onSetFuse: (seconds) => context.onInput({ type: "set-fuse", playerId, seconds, sentAt: Date.now() }),
+    onRopeToggle: () => context.onInput({ type: "rope:toggle", playerId, sentAt: Date.now() }),
+    onReelChange: (direction) => context.onInput({ type: "rope:reel", playerId, direction, sentAt: Date.now() }),
+    ropeAttached: gameState?.rope?.mercenaryId === activeMercenary?.id && Boolean(gameState?.rope),
+    ropeReeling: gameState?.rope?.reelInput === -1,
+    ropeDisabled: disabled || Boolean(gameState?.turn.hasFired) || gameState?.turn.chargeStartedAt !== null || (!gameState?.rope && (activeMercenary?.ammo.seilzug ?? 0) <= 0),
     onBackflip: () => context.onInput(createChaosKommandoJumpInput(playerId, "backflip")),
     onEndTurn: gameState?.turn.hasFired ? undefined : () => context.onInput({ type: "end-turn", playerId, sentAt: Date.now() }),
     accentColor: currentPlayer?.color ?? context.state.player?.color ?? "#22d3ee",
     resetKey: `${context.state.game?.roundNumber ?? 0}:${context.state.game?.phase ?? "idle"}:${gameState?.turn.activeMercenaryId ?? "none"}`,
     countdownEndsAtMs: retreating ? gameState?.turn.retreatEndsAt ?? undefined : resolving || preparing ? undefined : gameState?.turn.turnEndsAt,
-    stats: buildStats(gameState, en),
+    stats: buildStats(gameState, en, now),
     turnOwnerLabel: activeMercenary
       ? `${activeMercenary.playerName} | ${activeMercenary.name}`
       : en ? "No active mercenary" : "Kein aktiver Soeldner",

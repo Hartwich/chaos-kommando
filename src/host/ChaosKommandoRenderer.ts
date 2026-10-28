@@ -1,4 +1,7 @@
 import Phaser from "phaser";
+import { CharacterPresentation } from "./CharacterPresentation.js";
+import { resolveWeaponMuzzle } from "../combatGeometry.js";
+import { paintCoastalTerrain } from "./ChaosKommandoTerrainPainter.js";
 import { ChaosKommandoBattleEffects } from "./ChaosKommandoBattleEffects.js";
 import type {
   ChaosKommandoCraterState,
@@ -57,6 +60,7 @@ export interface ChaosKommandoRenderState {
   skyGraphics: Phaser.GameObjects.Graphics;
   background: Phaser.GameObjects.Image | null;
   battleEffects: ChaosKommandoBattleEffects;
+  presentation: CharacterPresentation;
   terrainImage: Phaser.GameObjects.Image | null;
   terrainSignature: string;
   waterGraphics: Phaser.GameObjects.Graphics;
@@ -70,6 +74,7 @@ export interface ChaosKommandoRenderState {
   cameraCenterY: number;
   cameraZoom: number;
   camera: CameraDirector;
+  overviewMode: boolean;
 }
 
 interface CameraTarget {
@@ -183,6 +188,7 @@ export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKomman
     skyGraphics,
     background: scene.textures.exists("chaos-coastal-background") ? scene.add.image(0, 0, "chaos-coastal-background").setOrigin(0).setDepth(-59) : null,
     battleEffects: new ChaosKommandoBattleEffects(scene),
+    presentation: new CharacterPresentation(),
     terrainImage: null,
     terrainSignature: "",
     waterGraphics,
@@ -195,7 +201,8 @@ export function createChaosKommandoRenderState(scene: Phaser.Scene): ChaosKomman
     cameraCenterX: idleWorld.width / 2,
     cameraCenterY: idleWorld.height / 2,
     cameraZoom: 0.92,
-    camera: createCameraDirector()
+    camera: createCameraDirector(),
+    overviewMode: false
   };
 }
 
@@ -203,6 +210,7 @@ export function destroyChaosKommandoRenderState(renderState: ChaosKommandoRender
   renderState.skyGraphics.destroy();
   renderState.background?.destroy();
   renderState.battleEffects.destroy();
+  renderState.presentation.clear();
   renderState.terrainImage?.destroy();
   renderState.terrainImage = null;
   renderState.waterGraphics.destroy();
@@ -237,7 +245,7 @@ export function snapChaosKommandoCamera(
   renderState: ChaosKommandoRenderState,
   state: ChaosKommandoState
 ): void {
-  const target = resolveCameraTarget(scene, state, renderState.camera);
+  const target = resolveCameraTarget(scene, state, renderState.camera, renderState.overviewMode);
   renderState.cameraCenterX = target.centerX;
   renderState.cameraCenterY = target.centerY;
   renderState.cameraZoom = target.zoom;
@@ -258,7 +266,7 @@ export function renderChaosKommandoIdleFrame(
   );
   applyCamera(scene, renderState, idleWorld.width, idleWorld.height);
   drawSky(renderState.skyGraphics, idleWorld.width, idleWorld.height, idleWorld.waterlineY, timeMs, 1, 1, "klapperkueste");
-  renderState.background?.setDisplaySize(idleWorld.width, idleWorld.height);
+  syncBackground(scene, renderState, idleWorld.width, idleWorld.height);
   syncTerrainTexture(scene, renderState, idleWorld, idleTerrainTextureKey, "klapperkueste");
   drawWater(
     renderState.waterGraphics,
@@ -286,7 +294,7 @@ export function renderChaosKommandoFrame(
   nowMs: number
 ): void {
   updateCameraDirector(renderState.camera, state, nowMs);
-  const target = resolveCameraTarget(scene, state, renderState.camera);
+  const target = resolveCameraTarget(scene, state, renderState.camera, renderState.overviewMode);
   // Waehrend der Regie und kurz danach bewusst traege nachfuehren.
   const scripted = renderState.camera.phase !== "follow";
   const calming = nowMs < renderState.camera.calmUntilMs;
@@ -307,7 +315,7 @@ export function renderChaosKommandoFrame(
     state.wind.direction,
     state.terrain.mapId
   );
-  renderState.background?.setDisplaySize(state.terrain.width, state.terrain.height);
+  syncBackground(scene, renderState, state.terrain.width, state.terrain.height);
   renderState.battleEffects.update(state, nowMs);
   syncTerrainTexture(scene, renderState, state.terrain, terrainTextureKey, state.terrain.mapId);
   drawWater(
@@ -322,9 +330,18 @@ export function renderChaosKommandoFrame(
     state.suddenDeath
   );
   drawEffects(renderState.effectsGraphics, state, nowMs, renderState.explosionSeenAtMs);
-  syncChaosKommandoCharacters(scene, renderState.characterRenderState, state, nowMs);
-  drawActors(renderState.actorGraphics, state, nowMs);
-  syncNameLabels(scene, renderState, state);
+  const presentedState = renderState.presentation.sample(state, nowMs);
+  syncChaosKommandoCharacters(scene, renderState.characterRenderState, presentedState, nowMs);
+  drawActors(renderState.actorGraphics, presentedState, nowMs);
+  syncNameLabels(scene, renderState, presentedState);
+}
+
+function syncBackground(scene: Phaser.Scene, renderState: ChaosKommandoRenderState, width: number, height: number): void {
+  const camera = scene.cameras.main;
+  const backgroundWidth = Math.max(width, camera.width / camera.zoom) + 8;
+  const backgroundHeight = Math.max(height, camera.height / camera.zoom) + 8;
+  renderState.background?.setDisplaySize(backgroundWidth, backgroundHeight)
+    .setPosition((width - backgroundWidth) / 2, (height - backgroundHeight) / 2);
 }
 
 function applyCamera(
@@ -334,17 +351,20 @@ function applyCamera(
   worldHeight: number
 ): void {
   const camera = scene.cameras.main;
+  camera.setViewport(0, 58, scene.scale.width, Math.max(100, scene.scale.height - 112));
   const worldViewWidth = scene.scale.width / Math.max(0.01, renderState.cameraZoom);
-  const worldViewHeight = scene.scale.height / Math.max(0.01, renderState.cameraZoom);
+  const worldViewHeight = camera.height / Math.max(0.01, renderState.cameraZoom);
   const halfWidth = worldViewWidth / 2;
   const halfHeight = worldViewHeight / 2;
-  const centerX = clamp(renderState.cameraCenterX, halfWidth, Math.max(halfWidth, worldWidth - halfWidth));
-  const centerY = clamp(renderState.cameraCenterY, halfHeight, Math.max(halfHeight, worldHeight - halfHeight));
+  const paddingX = Math.max(0, (worldViewWidth - worldWidth) / 2);
+  const paddingY = Math.max(0, (worldViewHeight - worldHeight) / 2);
+  const centerX = clamp(renderState.cameraCenterX, halfWidth - paddingX, Math.max(halfWidth - paddingX, worldWidth + paddingX - halfWidth));
+  const centerY = clamp(renderState.cameraCenterY, halfHeight - paddingY, Math.max(halfHeight - paddingY, worldHeight + paddingY - halfHeight));
 
   renderState.cameraCenterX = centerX;
   renderState.cameraCenterY = centerY;
 
-  camera.setBounds(0, 0, worldWidth, worldHeight);
+  camera.setBounds(-paddingX, -paddingY, worldWidth + paddingX * 2, worldHeight + paddingY * 2);
   camera.setZoom(renderState.cameraZoom);
   camera.centerOn(centerX, centerY);
 }
@@ -527,132 +547,25 @@ function finishCameraSequence(director: CameraDirector, nowMs: number): void {
 }
 
 function resolveCameraTarget(
-  scene: Phaser.Scene,
-  state: ChaosKommandoState,
-  director: CameraDirector
+  scene: Phaser.Scene, state: ChaosKommandoState, director: CameraDirector, overview: boolean
 ): CameraTarget {
-  const worldWidth = state.terrain.width;
-  const worldHeight = state.terrain.height;
-  const fitZoom = Math.min(scene.scale.width / worldWidth, scene.scale.height / worldHeight);
-
-  if (director.phase === "overview") {
-    return {
-      centerX: worldWidth / 2,
-      centerY: worldHeight / 2 - 40,
-      zoom: fitZoom * 0.97
-    };
-  }
-
-  if (director.phase === "casualty" && director.casualtyX !== null && director.casualtyY !== null) {
-    return {
-      centerX: director.casualtyX,
-      centerY: director.casualtyY - 40,
-      zoom: clamp(Math.min(scene.scale.width / 1_120, scene.scale.height / 720), fitZoom, 1.1)
-    };
-  }
-
-  if (director.phase === "cheer" && director.cheerX !== null && director.cheerY !== null) {
-    return {
-      centerX: director.cheerX,
-      centerY: director.cheerY - 50,
-      zoom: clamp(Math.min(scene.scale.width / 1_260, scene.scale.height / 800), fitZoom, 1)
-    };
-  }
-
-  if (director.phase === "crate" && director.crateX !== null && director.crateY !== null) {
-    return {
-      centerX: director.crateX,
-      centerY: director.crateY - 30,
-      zoom: clamp(Math.min(scene.scale.width / 1_180, scene.scale.height / 760), fitZoom, 1.05)
-    };
-  }
-
-  if (state.winnerPlayerId || state.isDraw) {
-    return {
-      centerX: worldWidth / 2,
-      centerY: worldHeight / 2 - 60,
-      zoom: fitZoom * 0.98
-    };
-  }
-
-  const targetSelection = resolveSelection(state);
-  const activeMercenary = targetSelection.mercenary;
-
-  // Shot in flight: zoom out so the whole trajectory stays visible.
-  if (state.projectiles.length > 0) {
-    let minX = Number.POSITIVE_INFINITY;
-    let maxX = Number.NEGATIVE_INFINITY;
-    let minY = Number.POSITIVE_INFINITY;
-    let maxY = Number.NEGATIVE_INFINITY;
-    const focusPoints = [
-      ...state.projectiles.map((projectile) => ({ x: projectile.x, y: projectile.y })),
-      ...state.explosions.map((explosion) => ({ x: explosion.x, y: explosion.y })),
-      ...(activeMercenary ? [{ x: activeMercenary.x, y: activeMercenary.y }] : [])
-    ];
-
-    for (const point of focusPoints) {
-      minX = Math.min(minX, point.x);
-      maxX = Math.max(maxX, point.x);
-      minY = Math.min(minY, point.y);
-      maxY = Math.max(maxY, point.y);
-    }
-
-    const viewWidth = clamp(maxX - minX + 520, 760, worldWidth);
-    const viewHeight = clamp(maxY - minY + 420, 540, worldHeight);
-    const zoom = clamp(
-      Math.min(scene.scale.width / viewWidth, scene.scale.height / viewHeight),
-      fitZoom * 0.9,
-      1.05
-    );
-    // Lead the newest projectile a bit along its velocity.
-    const lead = state.projectiles[state.projectiles.length - 1];
-
-    return {
-      centerX: (minX + maxX) / 2 + (lead ? clamp(lead.vx * 0.14, -120, 120) : 0),
-      centerY: (minY + maxY) / 2 + (lead ? clamp(lead.vy * 0.1, -90, 90) : 0),
-      zoom
-    };
-  }
-
-  // Fresh explosion: hold on the impact.
-  const recentExplosion = state.explosions[0];
-
-  if (recentExplosion) {
-    return {
-      centerX: recentExplosion.x,
-      centerY: recentExplosion.y - 30,
-      zoom: clamp(Math.min(scene.scale.width / 1_050, scene.scale.height / 680), fitZoom, 1.15)
-    };
-  }
-
-  // Tactical framing keeps neighbouring islands and enemy positions visible.
-  const activeCrosshair = !state.turn.hasFired ? resolveCrosshairPoint(state) : null;
-  const chargeRatio = resolveChargeRatio(state);
-  const closeZoom = clamp(
-    fitZoom * (1.16 - chargeRatio * 0.08),
-    fitZoom,
-    1.05
-  );
-
-  if (!activeMercenary) {
-    return {
-      centerX: state.cameraFocusX,
-      centerY: state.cameraFocusY - 30,
-      zoom: clamp(fitZoom * 1.35, fitZoom, 1)
-    };
-  }
-
-  const biasX = activeCrosshair
-    ? Phaser.Math.Linear(activeMercenary.x, activeCrosshair.x, 0.28)
-    : activeMercenary.x;
-  const biasY = activeCrosshair
-    ? Phaser.Math.Linear(activeMercenary.y - 40, activeCrosshair.y, 0.2)
-    : activeMercenary.y - 40;
-
+  const { width, height } = state.terrain;
+  const availableHeight = Math.max(100, scene.scale.height - 112);
+  const fit = Math.min(scene.scale.width / width, availableHeight / height);
+  if (overview || state.winnerPlayerId || state.isDraw) return { centerX: width / 2, centerY: height / 2, zoom: fit };
+  const active = resolveSelection(state).mercenary;
+  if (!active) return { centerX: width / 2, centerY: height / 2, zoom: fit };
+  const points = [{ x: active.x, y: active.y - 80 }];
+  if (state.rope) points.push({ x: state.rope.anchorX, y: state.rope.anchorY });
+  points.push(...state.projectiles.map((p) => ({ x: p.x, y: p.y })));
+  const xs = points.map((p) => p.x), ys = points.map((p) => p.y);
+  const left = Math.min(...xs), right = Math.max(...xs), top = Math.min(...ys), bottom = Math.max(...ys);
+  const viewWidth = Math.max(1400, right - left + 520);
+  const viewHeight = Math.max(720, bottom - top + 420);
   return {
-    centerX: Phaser.Math.Linear(worldWidth / 2, biasX, 0.45),
-    centerY: Phaser.Math.Linear(worldHeight / 2 + 20, biasY, 0.32),
-    zoom: closeZoom
+    centerX: (left + right) / 2 + (state.projectiles.length ? 0 : Math.cos(active.aimAngleRad) * 130),
+    centerY: (top + bottom) / 2 - (state.rope || state.projectiles.length ? 30 : 150),
+    zoom: Math.max(fit, Math.min(scene.scale.width / viewWidth, availableHeight / viewHeight, 1.1))
   };
 }
 
@@ -767,7 +680,6 @@ function syncTerrainTexture(
     return;
   }
 
-  const theme = resolveTerrainTheme(mapId);
   let texture = scene.textures.exists(textureKey)
     ? (scene.textures.get(textureKey) as Phaser.Textures.CanvasTexture)
     : scene.textures.createCanvas(textureKey, terrain.width, terrain.height);
@@ -786,7 +698,12 @@ function syncTerrainTexture(
 
     texture = recreated;
   }
-  paintTerrainCanvas(texture, terrain, theme, scene.textures.exists("chaos-sandstone") ? scene.textures.get("chaos-sandstone").getSourceImage() as HTMLImageElement : undefined);
+  const source = (key: string): HTMLImageElement | undefined => scene.textures.exists(key)
+    ? scene.textures.get(key).getSourceImage() as HTMLImageElement : undefined;
+  paintCoastalTerrain(texture.getContext(), terrain, source("chaos-sandstone"), {
+    palm: source("chaos-coastal-palm"), grass: source("chaos-coastal-grass")
+  });
+  texture.refresh();
   if (!renderState.terrainImage || renderState.terrainImage.texture.key !== textureKey) {
     renderState.terrainImage?.destroy();
     renderState.terrainImage = scene.add.image(0, 0, textureKey).setOrigin(0, 0).setDepth(-10);
@@ -797,300 +714,11 @@ function syncTerrainTexture(
   renderState.terrainSignature = signature;
 }
 
-function traceTerrainOutline(
-  ctx: CanvasRenderingContext2D,
-  terrain: TerrainLike,
-  offsetY: number
-): void {
-  ctx.moveTo(0, (terrain.samples[0] ?? 0) + offsetY);
-
-  for (let index = 1; index < terrain.samples.length; index += 1) {
-    ctx.lineTo(index * terrain.sampleSpacing, (terrain.samples[index] ?? 0) + offsetY);
-  }
-}
-
-/** Deterministisches Rauschen, damit die Map bei jedem Neuzeichnen gleich bleibt. */
 function terrainNoise(seed: number): number {
   const value = Math.sin(seed * 12.9898) * 43_758.5453;
   return value - Math.floor(value);
 }
 
-function tracePlatform(ctx: CanvasRenderingContext2D, platform: ChaosKommandoPlatformState): void {
-  ctx.moveTo(platform.x + platform.rx, platform.y);
-  ctx.ellipse(platform.x, platform.y, platform.rx, platform.ry, 0, 0, Math.PI * 2);
-}
-
-/** Gemeinsame Silhouette aus Hoehenkarte und schwebenden Inseln. */
-function traceTerrainMass(ctx: CanvasRenderingContext2D, terrain: TerrainLike): void {
-  ctx.beginPath();
-  ctx.moveTo(0, terrain.height);
-  ctx.lineTo(0, terrain.samples[0] ?? terrain.height);
-  traceTerrainOutline(ctx, terrain, 0);
-  ctx.lineTo(terrain.width, terrain.height);
-  ctx.closePath();
-
-  for (const platform of terrain.platforms) {
-    tracePlatform(ctx, platform);
-  }
-}
-
-/** Oberkante der Insel als eigener Grasstreifen. */
-function tracePlatformCap(ctx: CanvasRenderingContext2D, platform: ChaosKommandoPlatformState): void {
-  ctx.moveTo(platform.x - platform.rx, platform.y);
-  ctx.ellipse(platform.x, platform.y, platform.rx, platform.ry, 0, Math.PI, Math.PI * 2);
-}
-
-function paintTerrainCanvas(
-  texture: Phaser.Textures.CanvasTexture,
-  terrain: TerrainLike,
-  theme: TerrainTheme,
-  rockImage?: HTMLImageElement
-): void {
-  const ctx = texture.getContext();
-  const { width, height } = terrain;
-  const surfaceAt = (x: number): number => {
-    const index = clamp(Math.round(x / terrain.sampleSpacing), 0, terrain.samples.length - 1);
-    return terrain.samples[index] ?? height;
-  };
-
-  ctx.save();
-  ctx.globalCompositeOperation = "source-over";
-  ctx.clearRect(0, 0, width, height);
-
-  // 1. Grundkoerper aus Hoehenkarte und Inseln.
-  traceTerrainMass(ctx, terrain);
-  const gradient = ctx.createLinearGradient(0, 300, 0, height);
-  gradient.addColorStop(0, theme.terrainBody);
-  gradient.addColorStop(0.45, theme.terrainMid);
-  gradient.addColorStop(1, theme.terrainDeep);
-  ctx.fillStyle = gradient;
-  ctx.fill();
-
-  ctx.save();
-  ctx.clip();
-  if (rockImage) {
-    const pattern = ctx.createPattern(rockImage, "repeat");
-    if (pattern) { pattern.setTransform(new DOMMatrix().scale(0.42)); ctx.fillStyle = pattern; ctx.fillRect(0, 0, width, height); }
-  }
-  // 2. Gesteinsschichten: leicht wellige Baender quer durch die Erde.
-  for (let band = 0; band < 7; band += 1) {
-    const baseY = 470 + band * 108 + terrainNoise(band * 7.3) * 40;
-    const amplitude = 12 + terrainNoise(band * 3.1) * 22;
-    const wavelength = 260 + terrainNoise(band * 5.7) * 420;
-    const thickness = 16 + terrainNoise(band * 9.4) * 30;
-
-    ctx.beginPath();
-    ctx.moveTo(0, baseY);
-    for (let x = 0; x <= width; x += 24) {
-      ctx.lineTo(x, baseY + Math.sin(x / wavelength + band) * amplitude);
-    }
-    for (let x = width; x >= 0; x -= 24) {
-      ctx.lineTo(x, baseY + thickness + Math.sin(x / wavelength + band) * amplitude);
-    }
-    ctx.closePath();
-    ctx.fillStyle = band % 2 === 0 ? theme.rockDark : theme.rockLight;
-    ctx.globalAlpha = band % 2 === 0 ? 0.18 : 0.12;
-    ctx.fill();
-  }
-
-  ctx.globalAlpha = 1;
-
-  // 3. Kiesel und Einschluesse.
-  for (let index = 0; index < terrain.samples.length; index += 5) {
-    const x = index * terrain.sampleSpacing;
-    const surfaceY = surfaceAt(x);
-
-    for (let layer = 0; layer < 4; layer += 1) {
-      const noise = terrainNoise(index * 0.37 + layer * 11.7);
-      const y = surfaceY + 34 + noise * 240 + layer * 150;
-
-      if (y > height - 8) {
-        continue;
-      }
-
-      const radius = 1.8 + noise * 5.4;
-      ctx.beginPath();
-      ctx.ellipse(
-        x + noise * 28,
-        y,
-        radius,
-        radius * (0.6 + noise * 0.5),
-        noise * Math.PI,
-        0,
-        Math.PI * 2
-      );
-      ctx.fillStyle = layer % 2 === 0 ? theme.rockDark : theme.rockLight;
-      ctx.globalAlpha = layer % 2 === 0 ? 0.3 : 0.2;
-      ctx.fill();
-    }
-  }
-
-  ctx.globalAlpha = 1;
-
-  // 4. Duenne helle Krume direkt unter der Grasnarbe.
-  ctx.strokeStyle = theme.topsoil;
-  ctx.lineWidth = 16;
-  ctx.globalAlpha = 0.55;
-  ctx.beginPath();
-  traceTerrainOutline(ctx, terrain, 13);
-  ctx.stroke();
-
-  for (const platform of terrain.platforms) {
-    ctx.beginPath();
-    tracePlatformCap(ctx, { ...platform, ry: platform.ry - 12 });
-    ctx.stroke();
-  }
-
-  ctx.globalAlpha = 1;
-  ctx.restore();
-
-  // 5. Grasnarbe mit Buescheln und Wurzeln.
-  ctx.save();
-  traceTerrainMass(ctx, terrain);
-  ctx.clip();
-  drawRoots(ctx, terrain, theme, surfaceAt);
-  ctx.restore();
-
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.strokeStyle = theme.grassShadow;
-  ctx.lineWidth = 14;
-  ctx.beginPath();
-  traceTerrainOutline(ctx, terrain, 4);
-  ctx.stroke();
-  ctx.strokeStyle = theme.grass;
-  ctx.lineWidth = 10;
-  ctx.beginPath();
-  traceTerrainOutline(ctx, terrain, 0);
-  ctx.stroke();
-  ctx.strokeStyle = theme.grassHighlight;
-  ctx.lineWidth = 3;
-  ctx.beginPath();
-  traceTerrainOutline(ctx, terrain, -3);
-  ctx.stroke();
-
-  for (const platform of terrain.platforms) {
-    ctx.strokeStyle = theme.grass;
-    ctx.lineWidth = 10;
-    ctx.beginPath();
-    tracePlatformCap(ctx, platform);
-    ctx.stroke();
-    ctx.strokeStyle = theme.grassHighlight;
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    tracePlatformCap(ctx, { ...platform, ry: platform.ry + 3 });
-    ctx.stroke();
-  }
-
-  drawGrassTufts(ctx, terrain, theme, surfaceAt);
-
-  // 6. Krater herausstanzen: das erzeugt Tunnel und Ueberhaenge.
-  ctx.globalCompositeOperation = "destination-out";
-  for (const crater of terrain.craters) {
-    ctx.beginPath();
-    ctx.arc(crater.x, crater.y, crater.r, 0, Math.PI * 2);
-    ctx.fill();
-  }
-
-  // 7. Verbrannte Raender, nur wo noch Terrain steht.
-  ctx.globalCompositeOperation = "source-atop";
-  for (const crater of terrain.craters) {
-    const rim = ctx.createRadialGradient(
-      crater.x,
-      crater.y,
-      Math.max(1, crater.r * 0.72),
-      crater.x,
-      crater.y,
-      crater.r + 16
-    );
-    rim.addColorStop(0, theme.craterRim);
-    rim.addColorStop(0.55, "rgba(46, 28, 14, 0.42)");
-    rim.addColorStop(1, "rgba(46, 28, 14, 0)");
-    ctx.fillStyle = rim;
-    ctx.beginPath();
-    ctx.arc(crater.x, crater.y, crater.r + 16, 0, Math.PI * 2);
-    ctx.fill();
-
-    ctx.strokeStyle = "rgba(255, 205, 130, 0.2)";
-    ctx.lineWidth = 3;
-    ctx.beginPath();
-    ctx.arc(crater.x, crater.y, crater.r + 6, 0, Math.PI * 2);
-    ctx.stroke();
-  }
-
-  ctx.globalCompositeOperation = "source-over";
-  ctx.restore();
-  texture.refresh();
-}
-
-/** Wurzelfaeden, die aus der Grasnarbe in die Erde haengen. */
-function drawRoots(
-  ctx: CanvasRenderingContext2D,
-  terrain: TerrainLike,
-  theme: TerrainTheme,
-  surfaceAt: (x: number) => number
-): void {
-  ctx.strokeStyle = theme.root;
-  ctx.lineWidth = 2;
-  ctx.globalAlpha = 0.5;
-
-  for (let x = 0; x < terrain.width; x += 46) {
-    const noise = terrainNoise(x * 0.021);
-
-    if (noise < 0.45) {
-      continue;
-    }
-
-    const surfaceY = surfaceAt(x);
-    const length = 16 + noise * 34;
-    ctx.beginPath();
-    ctx.moveTo(x, surfaceY + 10);
-    ctx.quadraticCurveTo(
-      x + (noise - 0.5) * 26,
-      surfaceY + length * 0.6,
-      x + (noise - 0.5) * 14,
-      surfaceY + length
-    );
-    ctx.stroke();
-  }
-
-  ctx.globalAlpha = 1;
-}
-
-/** Kurze Grashalme auf der Kante, damit die Silhouette nicht wie ein Strich wirkt. */
-function drawGrassTufts(
-  ctx: CanvasRenderingContext2D,
-  terrain: TerrainLike,
-  theme: TerrainTheme,
-  surfaceAt: (x: number) => number
-): void {
-  ctx.strokeStyle = theme.grass;
-  ctx.lineWidth = 2.4;
-  ctx.lineCap = "round";
-
-  for (let x = 4; x < terrain.width; x += 17) {
-    const noise = terrainNoise(x * 0.043);
-
-    if (noise < 0.38) {
-      continue;
-    }
-
-    const surfaceY = surfaceAt(x);
-    const slope = surfaceAt(x + 12) - surfaceAt(x - 12);
-    // Auf Steilwaenden wachsen keine Halme.
-    if (Math.abs(slope) > 42) {
-      continue;
-    }
-
-    const height = 5 + noise * 9;
-    const lean = (noise - 0.5) * 8;
-    ctx.strokeStyle = noise > 0.72 ? theme.grassHighlight : theme.grass;
-    ctx.beginPath();
-    ctx.moveTo(x, surfaceY + 1);
-    ctx.quadraticCurveTo(x + lean * 0.4, surfaceY - height * 0.6, x + lean, surfaceY - height);
-    ctx.stroke();
-  }
-}
 
 function drawSky(
   graphics: Phaser.GameObjects.Graphics,
@@ -1771,26 +1399,15 @@ function drawMercenaryOverlay(
   graphics.fillRoundedRect(barX - 1, barY - 1, barWidth + 2, 9, 4);
   graphics.fillStyle(0x0f172a, 0.96);
   graphics.fillRoundedRect(barX, barY, barWidth, 7, 3);
-  graphics.fillStyle(hpRatio > 0.5 ? 0x22c55e : hpRatio > 0.25 ? 0xf59e0b : 0xef4444, 1);
+  graphics.fillStyle(teamColor, 1);
   graphics.fillRoundedRect(barX, barY, hpRatio > 0 ? Math.max(5, barWidth * hpRatio) : 0, 7, 3);
 
   if (isActive) {
-    const bounce = Math.sin(nowMs / 220) * 5;
-    drawActiveArrow(graphics, x, y - radius * 3.35 + bounce, teamColor);
+    graphics.lineStyle(2, teamColor, 0.55 + Math.sin(nowMs / 180) * 0.25);
+    graphics.strokeRoundedRect(barX - 3, barY - 3, barWidth + 6, 13, 4);
   }
 }
 
-function drawActiveArrow(
-  graphics: Phaser.GameObjects.Graphics,
-  x: number,
-  y: number,
-  color: number
-): void {
-  graphics.fillStyle(color, 0.96);
-  graphics.fillTriangle(x - 11, y - 8, x + 11, y - 8, x, y + 11);
-  graphics.lineStyle(2, 0xf8fafc, 0.85);
-  graphics.strokeTriangle(x - 11, y - 8, x + 11, y - 8, x, y + 11);
-}
 
 function drawGravestone(
   graphics: Phaser.GameObjects.Graphics,
@@ -1906,88 +1523,27 @@ function drawAimGuide(
   weapon: NonNullable<ReturnType<typeof findWeapon>>
 ): void {
   const color = toColorNumber(weapon.accentColor, 0xfbbf24);
-  const startX = mercenary.x + Math.cos(mercenary.aimAngleRad) * mercenary.radius * 1.1;
-  const startY = mercenary.y - mercenary.radius * 0.4 + Math.sin(mercenary.aimAngleRad) * mercenary.radius * 0.9;
+  const muzzle = resolveWeaponMuzzle(mercenary, weapon.id);
   const crosshair = resolveCrosshairPoint(state);
-
-  if (!crosshair) {
-    return;
+  if (!crosshair) return;
+  const ux = Math.cos(mercenary.aimAngleRad), uy = Math.sin(mercenary.aimAngleRad);
+  const length = Math.hypot(crosshair.x - muzzle.x, crosshair.y - muzzle.y);
+  graphics.fillStyle(0xfff7dc, 0.65);
+  for (let d = 14; d < length - 12; d += 17) graphics.fillCircle(muzzle.x + ux * d, muzzle.y + uy * d, 1.6);
+  graphics.lineStyle(2.5, 0x193331, 0.85); graphics.strokeCircle(crosshair.x, crosshair.y, 10);
+  graphics.lineStyle(2, 0xfff7dc, 0.9); graphics.strokeCircle(crosshair.x, crosshair.y, 8);
+  for (const direction of [-1, 1]) {
+    graphics.lineBetween(crosshair.x + direction * 12, crosshair.y, crosshair.x + direction * 17, crosshair.y);
+    graphics.lineBetween(crosshair.x, crosshair.y + direction * 12, crosshair.x, crosshair.y + direction * 17);
   }
-
-  const crosshairX = crosshair.x;
-  const crosshairY = crosshair.y;
-  const totalDistance = Math.hypot(crosshairX - startX, crosshairY - startY);
-  const directionX = totalDistance > 0.001 ? (crosshairX - startX) / totalDistance : Math.cos(mercenary.aimAngleRad);
-  const directionY = totalDistance > 0.001 ? (crosshairY - startY) / totalDistance : Math.sin(mercenary.aimAngleRad);
-  const chargeRatio = weapon.fireMode === "charged" ? resolveChargeRatio(state) : 1;
-  const beamRatio = weapon.fireMode === "charged" ? Math.max(0.12, chargeRatio) : 1;
-  const beamX = Phaser.Math.Linear(startX, crosshairX, beamRatio);
-  const beamY = Phaser.Math.Linear(startY, crosshairY, beamRatio);
-  const dashLength = 22;
-  const dashGap = 16;
-
-  graphics.lineStyle(2, color, weapon.fireMode === "charged" ? 0.26 : 0.48);
-  for (let travelled = 0; travelled < totalDistance; travelled += dashLength + dashGap) {
-    const fromDistance = travelled;
-    const toDistance = Math.min(totalDistance, travelled + dashLength);
-    graphics.lineBetween(
-      startX + directionX * fromDistance,
-      startY + directionY * fromDistance,
-      startX + directionX * toDistance,
-      startY + directionY * toDistance
-    );
-  }
-
-  if (weapon.fireMode === "charged") {
-    graphics.lineStyle(7, color, 0.12 + chargeRatio * 0.34);
-    graphics.lineBetween(startX, startY, beamX, beamY);
-    graphics.lineStyle(3, 0xfff7d6, 0.18 + chargeRatio * 0.5);
-    graphics.lineBetween(startX, startY, beamX, beamY);
-    const orbCount = Math.max(2, Math.round(4 + chargeRatio * 8));
-
-    for (let orbIndex = 0; orbIndex <= orbCount; orbIndex += 1) {
-      const orbRatio = (orbIndex / orbCount) * beamRatio;
-      const orbX = Phaser.Math.Linear(startX, crosshairX, orbRatio);
-      const orbY = Phaser.Math.Linear(startY, crosshairY, orbRatio);
-      const orbRadius = 3 + chargeRatio * 5 * (0.45 + orbIndex / Math.max(1, orbCount));
-
-      graphics.fillStyle(color, 0.1 + chargeRatio * 0.18);
-      graphics.fillCircle(orbX, orbY, orbRadius);
-      graphics.fillStyle(0xfff7d6, 0.08 + chargeRatio * 0.12);
-      graphics.fillCircle(orbX, orbY, orbRadius * 0.45);
+  if (weapon.fireMode === "charged" && state.turn.chargeStartedAt !== null) {
+    const charge = resolveChargeRatio(state);
+    const x = mercenary.x - 35, y = mercenary.y + mercenary.radius + 15;
+    graphics.fillStyle(0x132f36, 0.9); graphics.fillRoundedRect(x - 4, y - 3, 78, 13, 4);
+    for (let i = 0; i < 10; i++) {
+      graphics.fillStyle(i / 10 < charge ? i > 6 ? 0xffb85e : color : 0x61736c, i / 10 < charge ? 1 : 0.45);
+      graphics.fillRect(x + i * 7, y, 5, 7);
     }
-
-    graphics.fillStyle(color, 0.2 + chargeRatio * 0.36);
-    graphics.fillCircle(beamX, beamY, 7 + chargeRatio * 8);
-  } else {
-    graphics.lineStyle(3, color, 0.7);
-    graphics.lineBetween(startX, startY, crosshairX, crosshairY);
-    graphics.lineStyle(1, 0xfff7d6, 0.52);
-    graphics.lineBetween(startX, startY, crosshairX, crosshairY);
-  }
-
-  const crosshairRadius = weapon.fireMode === "charged" ? 11 + chargeRatio * 6 : 12;
-  const tickLength = crosshairRadius * 0.72;
-  graphics.lineStyle(3, color, 0.9);
-  graphics.lineBetween(crosshairX - crosshairRadius, crosshairY, crosshairX - tickLength, crosshairY);
-  graphics.lineBetween(crosshairX + tickLength, crosshairY, crosshairX + crosshairRadius, crosshairY);
-  graphics.lineBetween(crosshairX, crosshairY - crosshairRadius, crosshairX, crosshairY - tickLength);
-  graphics.lineBetween(crosshairX, crosshairY + tickLength, crosshairX, crosshairY + crosshairRadius);
-  graphics.lineStyle(2, 0xfff7d6, 0.62);
-  graphics.strokeCircle(crosshairX, crosshairY, crosshairRadius * 0.56);
-
-  if (weapon.fireMode === "charged") {
-    graphics.lineStyle(4, color, 0.42);
-    graphics.beginPath();
-    graphics.arc(
-      crosshairX,
-      crosshairY,
-      crosshairRadius + 7,
-      -Math.PI / 2,
-      -Math.PI / 2 + Math.PI * 2 * chargeRatio,
-      false
-    );
-    graphics.strokePath();
   }
 }
 
@@ -2014,10 +1570,12 @@ function syncNameLabels(
         label = scene.add
           .text(0, 0, mercenary.name, {
             fontFamily: '"Nunito Sans", "Arial", sans-serif',
-            fontSize: "13px",
+            fontSize: "21px",
             fontStyle: "bold",
-            color: tokens().color.text,
-            backgroundColor: "rgba(2, 6, 23, 0.72)"
+            align: "center",
+            color: "#fff7df",
+            stroke: "#193331",
+            strokeThickness: 4
           })
           .setOrigin(0.5, 1)
           .setPadding(6, 2, 6, 2)
@@ -2027,9 +1585,8 @@ function syncNameLabels(
 
       label
         .setVisible(true)
-        .setText(`${mercenary.playerName} | ${Math.ceil(mercenary.hp)}`)
-        .setColor(mercenary.teamColor || tokens().color.text)
-        .setPosition(mercenary.x, mercenary.y - mercenary.radius * 3.65);
+        .setText(mercenary.id === state.turn.activeMercenaryId ? `${mercenary.playerName}\n${Math.ceil(mercenary.hp)}` : `${Math.ceil(mercenary.hp)}`)
+        .setPosition(mercenary.x, mercenary.y - mercenary.radius * 4);
     }
   }
 

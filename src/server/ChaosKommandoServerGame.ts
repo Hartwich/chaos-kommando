@@ -1,3 +1,4 @@
+import { platformContains, platformSurfaceY } from "../terrainGeometry.js";
 import {
   createBaseRoundState,
   resolveRoundPhaseTimings,
@@ -30,21 +31,23 @@ import type {
   ChaosKommandoWindState
 } from "../protocol.js";
 import { chaosKommandoManifest } from "../manifest.js";
+import { terrainPresets, type TerrainPreset } from "./arenas.js";
+import { resolveWeaponMuzzle, resolveWeaponPivot, heldGunWeapons } from "../combatGeometry.js";
 
 const phaseTimings = resolveRoundPhaseTimings(chaosKommandoManifest.phaseDurations);
 
-const terrainWidth = 2_360;
-const terrainHeight = 1_260;
-const initialWaterlineY = 1_094;
+const terrainWidth = 3_200;
+const terrainHeight = 1_600;
+const initialWaterlineY = 1_370;
 const sampleSpacing = 4;
 const mercenaryRadius = 20;
-const walkSpeed = 68;
+const walkSpeed = 85;
 const gravity = 880;
 // Fixed ballistic hops: forward covers distance, backflip gains height.
-const jumpVelocity = -300;
-const backflipVelocity = -460;
-const jumpForwardBoost = 150;
-const backflipBoost = 70;
+const jumpVelocity = -390;
+const backflipVelocity = -600;
+const jumpForwardBoost = 195;
+const backflipBoost = 40;
 const turnDurationMs = 30_000;
 /**
  * Vorlauf am Zuganfang. Deckt Namensbanner und Kamerafahrt zum neuen Soeldner
@@ -75,13 +78,13 @@ const mineTriggerDistance = 40;
 
 /* --- Ninjaseil ------------------------------------------------------- */
 /** Maximale Wurfweite des Hakens. */
-const ropeMaxCastLength = 460;
+const ropeMaxCastLength = 900;
 /** Kuerzeste Seillaenge; darunter klebt man am Anker. */
 const ropeMinLength = 34;
 /** Seitliche Beschleunigung durch den Stick beim Schwingen. */
 const ropeSwingAcceleration = 640;
 /** Ein- und Ausrollgeschwindigkeit ueber den Stick. */
-const ropeReelSpeed = 190;
+const ropeReelSpeed = 240;
 /** Daempfung der Radialbewegung beim Straffen. Voll elastisch waere unspielbar. */
 const ropeRadialDamping = 0.35;
 /** Schrittweite des Hakenstrahls. */
@@ -624,46 +627,6 @@ const mercenaryTemplates: Array<{
   }
 ];
 
-interface TerrainPreset {
-  id: string;
-  name: string;
-  controlPoints: Array<{ x: number; y: number }>;
-  /** Pre-carved caves and arches so maps start with real overhangs. */
-  initialCraters: ChaosKommandoCraterState[];
-  /** Floating islands and rock spurs added above the heightmap. */
-  platforms: ChaosKommandoPlatformState[];
-}
-
-/**
- * Die Kontrollpunkte setzen bewusst harte Kanten: zwei dicht beieinander
- * liegende Punkte mit grossem Hoehenunterschied ergeben eine Steilwand, zwei
- * mit gleicher Hoehe ein Plateau. Boegen entstehen aus einer Reihe von
- * `initialCraters` unter einem Ruecken, schwebende Inseln aus `platforms`.
- */
-const terrainPresets: TerrainPreset[] = [
-  { id: "korallenriff", name: "Korallenriff", controlPoints: [
-    { x: 0, y: 1200 }, { x: 100, y: 760 }, { x: 310, y: 520 }, { x: 540, y: 690 },
-    { x: 670, y: 780 }, { x: 740, y: 1220 }, { x: 850, y: 1220 }, { x: 910, y: 750 },
-    { x: 1150, y: 600 }, { x: 1410, y: 720 }, { x: 1510, y: 1220 }, { x: 1630, y: 1220 },
-    { x: 1730, y: 760 }, { x: 2000, y: 510 }, { x: 2250, y: 750 }, { x: 2360, y: 1200 }
-  ], initialCraters: [{ x: 1120, y: 860, r: 110 }, { x: 1260, y: 880, r: 112 }],
-    platforms: [{ x: 730, y: 500, rx: 100, ry: 44 }, { x: 1620, y: 480, rx: 90, ry: 40 }] },
-  { id: "brueckenbucht", name: "Brueckenbucht", controlPoints: [
-    { x: 0, y: 1200 }, { x: 100, y: 850 }, { x: 340, y: 650 }, { x: 590, y: 790 },
-    { x: 700, y: 1220 }, { x: 820, y: 1220 }, { x: 930, y: 640 }, { x: 1180, y: 450 },
-    { x: 1420, y: 650 }, { x: 1530, y: 1220 }, { x: 1640, y: 1220 }, { x: 1790, y: 800 },
-    { x: 2040, y: 620 }, { x: 2250, y: 820 }, { x: 2360, y: 1200 }
-  ], initialCraters: [{ x: 1080, y: 760, r: 110 }, { x: 1220, y: 760, r: 110 }, { x: 1360, y: 760, r: 110 }],
-    platforms: [{ x: 700, y: 540, rx: 125, ry: 40 }, { x: 1630, y: 560, rx: 125, ry: 40 }] },
-  { id: "splitterinseln", name: "Splitterinseln", controlPoints: [
-    { x: 0, y: 1200 }, { x: 100, y: 760 }, { x: 280, y: 580 }, { x: 490, y: 700 },
-    { x: 590, y: 1220 }, { x: 730, y: 1220 }, { x: 830, y: 820 }, { x: 1100, y: 650 },
-    { x: 1370, y: 820 }, { x: 1490, y: 1220 }, { x: 1630, y: 1220 }, { x: 1730, y: 700 },
-    { x: 1990, y: 560 }, { x: 2240, y: 810 }, { x: 2360, y: 1200 }
-  ], initialCraters: [{ x: 250, y: 820, r: 80 }, { x: 1990, y: 810, r: 92 }],
-    platforms: [{ x: 650, y: 470, rx: 120, ry: 48 }, { x: 1530, y: 480, rx: 120, ry: 48 }, { x: 1200, y: 410, rx: 105, ry: 42 }] }
-];
-
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
@@ -736,18 +699,26 @@ function buildWind(seed: number, language: SupportedLanguage): ChaosKommandoWind
 function createSpawnSlots(playerCount: number, terrain: ChaosKommandoTerrainState): number[] {
   const slots: number[] = [];
   const count = playerCount * 3;
-  for (let index = 0; index < count; index += 1) {
-    const desired = 110 + index * (terrain.width - 220) / Math.max(1, count - 1);
-    for (let offset = 0; offset < terrain.width; offset += 6) {
-      const candidates = offset === 0 ? [desired] : [desired - offset, desired + offset];
-      const x = candidates.find((candidate) => candidate >= 70 && candidate <= terrain.width - 70 &&
-        slots.every((used) => Math.abs(used - candidate) > mercenaryRadius * 3) &&
-        resolveSpawnSurfaceY(terrain, candidate) < terrain.waterlineY - 120 &&
-        !isTerrainSolid(terrain, candidate, resolveSpawnSurfaceY(terrain, candidate) - mercenaryRadius * 2));
-      if (x !== undefined) { slots.push(x); break; }
-    }
+  const candidates: number[] = [];
+  // A spawn needs a whole support ledge, not just one solid pixel under its centre.
+  // Both directions leave room for a backflip before a cliff or an arch opening.
+  for (let x = 90; x <= terrain.width - 90; x += 6) {
+    const surface = resolveSpawnGroundY(terrain, x);
+    if (terrain.platforms.some((p) => p.rx < 100 && p.ry < 60 && Math.abs(p.x - x) < p.rx + mercenaryRadius)) continue;
+    if (surface >= terrain.waterlineY - 130) continue;
+    if ([-22, 22].some((dx) => Math.abs(resolveSpawnGroundY(terrain, x + dx) - surface) > 18)) continue;
+    if ([-48, 48].some((dx) => resolveSpawnGroundY(terrain, x + dx) >= terrain.waterlineY - 130 || Math.abs(resolveSpawnGroundY(terrain, x + dx) - surface) > 105)) continue;
+    if ([-mercenaryRadius, 0, mercenaryRadius].some((dx) => isTerrainSolid(terrain, x + dx, surface - mercenaryRadius * 2))) continue;
+    candidates.push(x);
   }
-  return slots;
+  const packed: number[] = [];
+  for (const x of candidates) if (!packed.length || x - packed[packed.length - 1] >= 74) packed.push(x);
+  if (packed.length < count) throw new Error(`Arena ${terrain.mapId} has only ${packed.length} safe spawns for ${count} units`);
+  for (let index = 0; index < count; index++) {
+    slots.push(packed[Math.round(index * (packed.length - 1) / Math.max(1, count - 1))]);
+  }
+
+  return slots.sort((a, b) => a - b);
 }
 
 function smoothStep(value: number): number {
@@ -793,15 +764,15 @@ function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainS
   const samples = Array.from({ length: sampleCount }, (_, index) => {
     const x = index * sampleSpacing;
     const sculpted =
-      resolvePresetHeight(preset, x) +
-      Math.sin(x / 64) * 7 +
-      Math.cos(x / 118) * 5 +
-      Math.sin(x / 28) * 2;
-    return clamp(sculpted, 410, terrainHeight);
+      resolvePresetHeight(preset, x / (5 / 3)) * 1.6 +
+      Math.sin(x / 64) * 2.5 +
+      Math.cos(x / 118) * 1.8 +
+      Math.sin(x / 28);
+    return clamp(sculpted, 320, terrainHeight);
   });
   // Keep water channels and natural cliff silhouettes intact. Spawn safety is
   // resolved against the complete solid geometry, including floating ledges.
-  const craters = preset.initialCraters.map((crater) => ({ ...crater }));
+  const craters = preset.initialCraters.map((crater) => ({ ...crater, x: crater.x * (5 / 3), y: crater.y * 1.6, r: crater.r * 1.6 }));
   return {
     mapId: preset.id,
     mapName: preset.name,
@@ -811,7 +782,20 @@ function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainS
     sampleSpacing,
     samples,
     craters,
-    platforms: preset.platforms.map((platform) => ({ ...platform }))
+    platforms: [...preset.platforms,
+      { x: 640, y: 275, rx: 230, ry: 80, contour: [
+        {x:-1,y:-0.15},{x:-0.84,y:-0.85},{x:-0.55,y:-0.94},{x:-0.17,y:-0.87},{x:0.18,y:-1},{x:0.58,y:-0.84},{x:0.86,y:-0.78},{x:1,y:-0.12},
+        {x:0.88,y:0.35},{x:0.62,y:0.58},{x:0.31,y:1},{x:0.03,y:0.69},{x:-0.29,y:0.91},{x:-0.65,y:0.45},{x:-0.88,y:0.38}] },
+      { x: 1295, y: 305, rx: 240, ry: 92, contour: [
+        {x:-1,y:0.05},{x:-0.86,y:-0.77},{x:-0.55,y:-0.86},{x:-0.2,y:-0.98},{x:0.18,y:-0.91},{x:0.56,y:-0.99},{x:0.83,y:-0.8},{x:1,y:-0.23},
+        {x:0.9,y:0.28},{x:0.68,y:0.46},{x:0.4,y:0.91},{x:0.11,y:0.62},{x:-0.12,y:1},{x:-0.47,y:0.68},{x:-0.72,y:0.59}] },
+      { x: 880, y: 110, rx: 100, ry: 39, contour: [
+        {x:-1,y:0},{x:-0.76,y:-0.86},{x:-0.3,y:-0.94},{x:0.22,y:-0.88},{x:0.74,y:-1},{x:1,y:-0.14},
+        {x:0.78,y:0.51},{x:0.36,y:0.73},{x:0.04,y:1},{x:-0.36,y:0.59},{x:-0.8,y:0.44}] },
+      { x: 1650, y: 130, rx: 112, ry: 46, contour: [
+        {x:-1,y:-0.08},{x:-0.8,y:-0.83},{x:-0.31,y:-0.91},{x:0.2,y:-1},{x:0.77,y:-0.88},{x:1,y:0.06},
+        {x:0.72,y:0.48},{x:0.25,y:1},{x:-0.05,y:0.66},{x:-0.52,y:0.88},{x:-0.84,y:0.36}] }
+    ].map((p) => ({ ...p, x: p.x * (5 / 3), y: p.y * 1.6, rx: p.rx * (5 / 3), ry: p.ry * 1.6 }))
   };
 }
 
@@ -824,25 +808,13 @@ function resolveBaseGroundY(terrain: ChaosKommandoTerrainState, x: number): numb
 
 /** Schwebende Inseln fuegen Masse oberhalb der Hoehenkarte hinzu. */
 function isInsidePlatform(terrain: ChaosKommandoTerrainState, x: number, y: number): boolean {
-  const platforms = terrain.platforms;
-
-  for (let index = 0; index < platforms.length; index += 1) {
-    const platform = platforms[index];
-    const dx = (x - platform.x) / platform.rx;
-    const dy = (y - platform.y) / platform.ry;
-
-    if (dx * dx + dy * dy < 1) {
-      return true;
-    }
-  }
-
-  return false;
+  return terrain.platforms.some((platform) => platformContains(platform, x, y));
 }
 
-/**
- * True 2D solidity test: below the heightmap or inside a platform, and not
- * inside any crater. This is what makes tunnels, caves and overhangs possible.
- */
+function resolveSpawnGroundY(terrain: ChaosKommandoTerrainState, x: number): number {
+  return terrain.platforms.reduce((y, p) => Math.min(y, platformSurfaceY(p, x) ?? Infinity), resolveBaseGroundY(terrain, x));
+}
+
 function isTerrainSolid(terrain: ChaosKommandoTerrainState, x: number, y: number): boolean {
   if (x < 0 || x > terrain.width || y < 0) {
     return false;
@@ -900,7 +872,7 @@ function resolveSpawnSurfaceY(terrain: ChaosKommandoTerrainState, x: number): nu
 
 function buildAmmo(): Record<ChaosKommandoWeaponId, number> {
   return {
-    "baseball-schlaeger": 99, seilzug: 6, "kicher-bazooka": 9,
+    "baseball-schlaeger": 99, seilzug: 12, "kicher-bazooka": 9,
     "enten-granate": 5, "splitter-granate": 2, "plunder-pistole": 4,
     "regenbogen-rakete": 2, "konfetti-schrot": 3, "bohrer-rakete": 2,
     "gummi-huhn": 2, "seifenblasen-bombe": 2, "keks-moerser": 2,
@@ -917,7 +889,7 @@ function createMercenary(
   terrain: ChaosKommandoTerrainState
 ): RuntimeMercenaryState {
   const x = clamp(spawnX, mercenaryRadius + 4, terrain.width - mercenaryRadius - 4);
-  const y = resolveSpawnSurfaceY(terrain, x) - mercenaryRadius;
+  const y = resolveSpawnGroundY(terrain, x) - mercenaryRadius;
 
   return {
     id: `${player.id}:merc:${mercenaryIndex}`,
@@ -1269,7 +1241,7 @@ function resolveCrosshairPosition(
 
   return {
     x: mercenary.x + Math.cos(fallbackAngleRad) * crosshairDistance,
-    y: mercenary.y + Math.sin(fallbackAngleRad) * crosshairDistance
+    y: resolveWeaponPivot(mercenary).y + Math.sin(fallbackAngleRad) * crosshairDistance
   };
 }
 
@@ -2025,6 +1997,26 @@ function createProjectile(
 }
 
 /** Ein einzelner Schuss einer Salve, mit leichter Streuung je Index. */
+function recordWeaponAction(state: ChaosKommandoRuntimeState, mercenary: RuntimeMercenaryState, weaponId: ChaosKommandoWeaponId, now: number): ChaosKommandoRuntimeState {
+  const muzzle = resolveWeaponMuzzle(mercenary, weaponId);
+  return { ...state, weaponActions: [...state.weaponActions.filter((event) => now - event.firedAt < 1200),
+    { id: `${mercenary.id}:${now}`, mercenaryId: mercenary.id, weaponId, ...muzzle, angleRad: mercenary.aimAngleRad, firedAt: now }].slice(-12) };
+}
+
+function resolveLaunchOrigin(state: ChaosKommandoRuntimeState, mercenary: RuntimeMercenaryState, weaponId: ChaosKommandoWeaponId): { x: number; y: number } {
+  const muzzle = resolveWeaponMuzzle(mercenary, weaponId);
+  if (!heldGunWeapons.includes(weaponId)) return muzzle;
+  const pivot = resolveWeaponPivot(mercenary);
+  const distance = Math.hypot(muzzle.x - pivot.x, muzzle.y - pivot.y);
+  for (let d = 0; d <= distance; d += 2) {
+    const x = pivot.x + (muzzle.x - pivot.x) * d / distance;
+    const y = pivot.y + (muzzle.y - pivot.y) * d / distance;
+    // Leave the projectile before the obstruction; its first step must hit it.
+    if (isTerrainSolid(state.terrain, x, y)) return { x: x - Math.cos(mercenary.aimAngleRad) * 5, y: y - Math.sin(mercenary.aimAngleRad) * 5 };
+  }
+  return muzzle;
+}
+
 function createBurstProjectile(
   state: ChaosKommandoRuntimeState,
   mercenary: RuntimeMercenaryState,
@@ -2036,15 +2028,15 @@ function createBurstProjectile(
   const rng = createRng((state.seed ^ (index * 7919)) >>> 0);
   const angle = mercenary.aimAngleRad + (rng() - 0.5) * 0.09;
   const speed = definition.projectileSpeed * (0.92 + rng() * 0.14);
-  const offset = mercenary.radius * 1.35;
+  const origin = resolveLaunchOrigin(state, mercenary, weaponId);
 
   return createProjectile(
     `projectile:${now}:${mercenary.id}:burst${index}`,
     weaponId,
     definition,
     mercenary,
-    mercenary.x + Math.cos(angle) * offset,
-    mercenary.y + Math.sin(angle) * offset,
+    origin.x,
+    origin.y,
     Math.cos(angle) * speed,
     Math.sin(angle) * speed
   );
@@ -2069,7 +2061,7 @@ function advanceBurst(state: ChaosKommandoRuntimeState, now: number): ChaosKomma
   const remaining = burst.remaining - 1;
 
   return {
-    ...state,
+    ...recordWeaponAction(state, mercenary, burst.weaponId, now),
     projectiles: [...state.projectiles, projectile],
     burst:
       remaining > 0
@@ -2094,6 +2086,7 @@ function buildFiredProjectiles(
 ): RuntimeProjectileState[] {
   const angle = mercenary.aimAngleRad;
   const launchSpeed = definition.projectileSpeed * chargeRatio;
+  const origin = resolveLaunchOrigin(state, mercenary, weaponId);
 
   if (weaponId === "dynamit") {
     // Placed at the mercenary's feet: run!
@@ -2147,8 +2140,8 @@ function buildFiredProjectiles(
         weaponId,
         definition,
         mercenary,
-        mercenary.x + Math.cos(projectileAngle) * mercenary.radius * 1.35,
-        mercenary.y + Math.sin(projectileAngle) * mercenary.radius * 1.35,
+        origin.x,
+        origin.y,
         Math.cos(projectileAngle) * speed,
         Math.sin(projectileAngle) * speed
       );
@@ -2167,8 +2160,8 @@ function buildFiredProjectiles(
       weaponId,
       definition,
       mercenary,
-      mercenary.x + Math.cos(angle) * mercenary.radius * 1.3,
-      mercenary.y + Math.sin(angle) * mercenary.radius * 1.3,
+      origin.x,
+      origin.y,
       Math.cos(angle) * launchSpeed,
       Math.sin(angle) * launchSpeed
     )
@@ -2210,7 +2203,7 @@ function fireActiveWeapon(
     const hitX = activeMercenary.x + Math.cos(angle) * activeMercenary.radius * 1.7;
     const hitY = activeMercenary.y + Math.sin(angle) * activeMercenary.radius * 1.7;
     const consumedState: ChaosKommandoRuntimeState = {
-      ...state,
+      ...recordWeaponAction(state, activeMercenary, weaponId, now),
       players: refreshPlayerSummaries(
         state.players.map((player) => ({
           ...player,
@@ -2311,7 +2304,7 @@ function fireActiveWeapon(
     )
   }));
   const nextState: ChaosKommandoRuntimeState = {
-    ...state,
+    ...recordWeaponAction(state, activeMercenary, weaponId, now),
     players: refreshPlayerSummaries(nextPlayers),
     projectiles: [...state.projectiles, ...projectiles],
     // Die Minigun feuert sechs Schuss im Abstand von 90 ms.
@@ -2405,7 +2398,7 @@ function updateProjectile(
   // Substepped movement so fast shots cannot tunnel through thin walls.
   const speed = Math.hypot(nextProjectile.vx, nextProjectile.vy);
   const travel = speed * seconds;
-  const steps = Math.max(1, Math.min(48, Math.ceil(travel / 6)));
+  const steps = Math.max(1, Math.min(96, Math.ceil(travel / 3)));
   const stepSeconds = seconds / steps;
   const bouncy = isBouncyWeapon(nextProjectile.weaponId) || nextProjectile.generation > 0;
 
@@ -2798,10 +2791,11 @@ function applyCratePhysics(
  */
 function castRope(
   terrain: ChaosKommandoTerrainState,
-  mercenary: RuntimeMercenaryState
+  mercenary: RuntimeMercenaryState,
+  angle = mercenary.aimAngleRad
 ): ChaosKommandoRopeState | null {
-  const ux = Math.cos(mercenary.aimAngleRad);
-  const uy = Math.sin(mercenary.aimAngleRad);
+  const ux = Math.cos(angle);
+  const uy = Math.sin(angle);
 
   for (let distance = mercenary.radius + 6; distance <= ropeMaxCastLength; distance += ropeCastStep) {
     const x = mercenary.x + ux * distance;
@@ -2816,12 +2810,29 @@ function castRope(
         mercenaryId: mercenary.id,
         anchorX: x,
         anchorY: y,
-        length: Math.max(ropeMinLength, distance)
+        length: Math.max(ropeMinLength, distance),
+        reelInput: 0
       };
     }
   }
 
   return null;
+}
+
+function toggleGrapple(state: ChaosKommandoRuntimeState, mercenary: RuntimeMercenaryState, now: number): ChaosKommandoRuntimeState {
+  if (state.rope) return syncTurnPresentation({ ...state, rope: null, updatedAt: now }, now);
+  if ((mercenary.ammo.seilzug ?? 0) <= 0 || state.turn.chargeStartedAt !== null) return state;
+  const hooks = [-Math.PI / 2, -Math.PI / 2 - 0.22, -Math.PI / 2 + 0.22,
+    -Math.PI / 2 - 0.45, -Math.PI / 2 + 0.45, -Math.PI / 2 - 0.7, -Math.PI / 2 + 0.7, -Math.PI / 2 - 1.05, -Math.PI / 2 + 1.05]
+    .map((angle) => castRope(state.terrain, mercenary, angle)).filter((hook): hook is ChaosKommandoRopeState => Boolean(hook));
+  const ceiling = hooks.filter((h) => h.anchorY < mercenary.y - 30 &&
+    !isTerrainSolid(state.terrain, h.anchorX, h.anchorY + 10));
+  ceiling.sort((a, b) => a.length - b.length);
+  const rope = ceiling[0] ?? hooks.find((h) => h.anchorY < mercenary.y - 30) ?? castRope(state.terrain, mercenary) ?? hooks[0];
+  if (!rope) return state;
+  return syncTurnPresentation({ ...state, rope, updatedAt: now,
+    players: state.players.map((p) => ({ ...p, mercenaries: p.mercenaries.map((m) => m.id === mercenary.id
+      ? { ...m, jumpKind: null, ammo: { ...m.ammo, seilzug: m.ammo.seilzug - 1 } } : m) })) }, now);
 }
 
 /**
@@ -2837,7 +2848,8 @@ function applyRopeStep(
   mercenary: RuntimeMercenaryState,
   rope: ChaosKommandoRopeState,
   seconds: number
-): { rope: ChaosKommandoRopeState } {
+): { rope: ChaosKommandoRopeState | null } {
+  const beforeX = mercenary.x, beforeY = mercenary.y;
   mercenary.grounded = false;
   mercenary.airborneFromY = null;
   mercenary.vy += gravity * seconds;
@@ -2850,7 +2862,7 @@ function applyRopeStep(
 
   // Stick nach oben verkuerzt das Seil (klettern), nach unten verlaengert es.
   const nextLength = clamp(
-    rope.length + mercenary.moveInputY * ropeReelSpeed * seconds,
+    rope.length + (rope.reelInput || mercenary.moveInputY) * ropeReelSpeed * seconds,
     ropeMinLength,
     ropeMaxCastLength
   );
@@ -2879,14 +2891,28 @@ function applyRopeStep(
     }
   }
 
-  // Anschlagen an Terrain bremst, loest das Seil aber nicht.
-  if (isTerrainSolid(terrain, mercenary.x, mercenary.y + mercenary.radius * 0.8)) {
-    mercenary.y -= 3;
-    mercenary.vy = Math.min(0, mercenary.vy) * 0.3;
+  const clear = (x: number, y: number): boolean => [[0, -0.95], [0.95, 0], [-0.95, 0], [0, 0.95]]
+    .every(([dx, dy]) => !isTerrainSolid(terrain, x + dx * mercenary.radius, y + dy * mercenary.radius));
+  // Collision wins over the rope constraint: slide along rock rather than phase through it.
+  if (!clear(mercenary.x, mercenary.y)) {
+    if (clear(beforeX, mercenary.y)) { mercenary.x = beforeX; mercenary.vx = 0; }
+    else if (clear(mercenary.x, beforeY)) { mercenary.y = beforeY; mercenary.vy = 0; }
+    else { mercenary.x = beforeX; mercenary.y = beforeY; mercenary.vx = 0; mercenary.vy = 0; }
   }
-  if (isTerrainSolid(terrain, mercenary.x, mercenary.y - mercenary.radius * 0.8)) {
-    mercenary.y += 3;
-    mercenary.vy = Math.max(0, mercenary.vy) * 0.3;
+  // At a ledge lip, pull over the edge only if the ascent beside the rock is clear.
+  if ((rope.reelInput < 0 || mercenary.moveInputY < -0.2) && nextLength < mercenary.radius * 3) {
+    const direction = Math.sign(rope.anchorX - mercenary.x) || (mercenary.facing === "right" ? 1 : -1);
+    const landingX = clamp(rope.anchorX + direction * mercenary.radius * 1.5, mercenary.radius + 8, terrain.width - mercenary.radius - 8);
+    const surface = findSurfaceBelow(terrain, landingX, rope.anchorY - 180, rope.anchorY + 8);
+    if (surface !== null && !isTerrainSolid(terrain, landingX, surface - 2)) {
+      let ascentClear = true;
+      for (let y = mercenary.y; y >= surface - mercenary.radius; y -= 3) if (!clear(mercenary.x, y)) { ascentClear = false; break; }
+      if (ascentClear && clear(landingX, surface - mercenary.radius - 1)) {
+        mercenary.x = landingX; mercenary.y = surface - mercenary.radius - 1;
+        mercenary.vx = 0; mercenary.vy = 0; mercenary.grounded = true; mercenary.airborneFromY = null;
+        return { rope: null };
+      }
+    }
   }
 
   return { rope: { ...rope, length: nextLength } };
@@ -2962,7 +2988,9 @@ function applyMercenaryPhysics(
         if (isActiveMercenary && Math.abs(nextMercenary.moveInputX) > 0.12) {
           const direction = Math.sign(nextMercenary.moveInputX);
           nextMercenary.vx = direction * walkSpeed;
-          nextMercenary.facing = direction > 0 ? "right" : "left";
+          const nextFacing = direction > 0 ? "right" : "left";
+          if (nextMercenary.facing !== nextFacing) nextMercenary.aimAngleRad = Math.atan2(Math.sin(nextMercenary.aimAngleRad), -Math.cos(nextMercenary.aimAngleRad));
+          nextMercenary.facing = nextFacing;
 
           const targetX = clamp(
             nextMercenary.x + nextMercenary.vx * seconds,
@@ -3063,8 +3091,9 @@ function applyMercenaryPhysics(
 
             const airborneFromY = nextMercenary.airborneFromY ?? nextMercenary.y;
             const fallDistance = landingY - airborneFromY;
-            const fallDamage =
-              nextMercenary.alive && fallDistance > 150 ? Math.round((fallDistance - 150) * 0.16) : 0;
+            const safeFall = nextMercenary.jumpKind === "backflip" ? backflipVelocity ** 2 / (2 * gravity) + 35
+              : nextMercenary.jumpKind === "rope" ? 660 ** 2 / (2 * gravity) + 35 : 150;
+            const fallDamage = nextMercenary.alive && fallDistance > safeFall ? Math.round((fallDistance - safeFall) * 0.16) : 0;
             nextMercenary.y = landingY;
             nextMercenary.vy = 0;
             nextMercenary.vx *= 0.45;
@@ -3249,11 +3278,12 @@ function buildControllerState(state: ChaosKommandoRuntimeState): ChaosKommandoSt
     turn: buildPublicTurn(state.turn),
     weapons: state.weapons,
     projectiles: [],
+    weaponActions: [],
     explosions: [],
     gravestones: [],
     mines: [],
     crates: [],
-    rope: null,
+    rope: state.rope,
     wind: state.wind,
     suddenDeath: state.suddenDeath,
     winnerPlayerId: state.winnerPlayerId,
@@ -3305,6 +3335,7 @@ export const chaosKommandoServerGame: ServerGame<
       },
       weapons: localizeWeaponDefinitions(context.language),
       projectiles: [],
+      weaponActions: [],
       explosions: [],
       gravestones: [],
       mines: createMines(terrain, context.players.length || 2, seed),
@@ -3371,7 +3402,7 @@ export const chaosKommandoServerGame: ServerGame<
     // Zielen sind erlaubt, damit man den Zug vorbereiten kann.
     if (
       context.now < state.turn.prepEndsAt &&
-      (input.type === "move" || input.type === "jump" || input.type === "end-turn" || input.type === "fire:start" || input.type === "fire:release")
+      (input.type === "rope:toggle" || input.type === "rope:reel" || input.type === "move" || input.type === "jump" || input.type === "end-turn" || input.type === "fire:start" || input.type === "fire:release")
     ) {
       return state;
     }
@@ -3380,6 +3411,11 @@ export const chaosKommandoServerGame: ServerGame<
     } else if (context.now >= state.turn.turnEndsAt) return state;
     if ((input.type === "move" || input.type === "aim") &&
         ![input.type === "move" ? input.moveX : input.aimX, input.type === "move" ? input.moveY : input.aimY].every(Number.isFinite)) return state;
+    if (input.type === "rope:toggle") return toggleGrapple(state, activeMercenary, context.now);
+    if (input.type === "rope:reel") {
+      if (!state.rope || ![-1, 0, 1].includes(input.direction)) return state;
+      return { ...state, rope: { ...state.rope, reelInput: input.direction }, updatedAt: context.now };
+    }
     if (input.type === "end-turn") return endActiveTurn(state, context.now);
     if (input.type === "set-fuse") {
       if (!Number.isInteger(input.seconds) || input.seconds < 1 || input.seconds > 5) return state;
@@ -3469,6 +3505,11 @@ export const chaosKommandoServerGame: ServerGame<
     }
 
     if (input.type === "jump") {
+      if (state.rope && state.turn.chargeStartedAt === null) {
+        return syncTurnPresentation({ ...state, rope: null, updatedAt: context.now,
+          players: state.players.map((p) => ({ ...p, mercenaries: p.mercenaries.map((m) => m.id === activeMercenary.id
+            ? { ...m, grounded: false, jumpKind: "rope", vx: m.vx + (m.facing === "right" ? 120 : -120), vy: -660, airborneFromY: m.y, jumpReadyAt: context.now + jumpCooldownMs } : m) })) }, context.now);
+      }
       if (state.turn.chargeStartedAt !== null || state.rope || !activeMercenary.grounded || activeMercenary.jumpReadyAt > context.now) {
         return state;
       }
@@ -3506,46 +3547,7 @@ export const chaosKommandoServerGame: ServerGame<
       // Der Seilzug liegt bewusst auf der Feuertaste: gedrueckt wirft er den
       // Haken, erneut gedrueckt laesst er los. Er verbraucht den Schuss des
       // Zuges nicht, sonst waere er als Fortbewegung wertlos.
-      if (state.turn.currentWeaponId === "seilzug") {
-        if (state.rope) {
-          return syncTurnPresentation({ ...state, rope: null, updatedAt: context.now }, context.now);
-        }
-
-        if ((activeMercenary.ammo.seilzug ?? 0) <= 0) {
-          return state;
-        }
-
-        const rope = castRope(state.terrain, activeMercenary);
-
-        if (!rope) {
-          return state;
-        }
-
-        return syncTurnPresentation(
-          {
-            ...state,
-            rope,
-            players: refreshPlayerSummaries(
-              state.players.map((entry) => ({
-                ...entry,
-                mercenaries: entry.mercenaries.map((mercenary) =>
-                  mercenary.id === activeMercenary.id
-                    ? {
-                        ...mercenary,
-                        ammo: {
-                          ...mercenary.ammo,
-                          seilzug: Math.max(0, (mercenary.ammo.seilzug ?? 0) - 1)
-                        }
-                      }
-                    : mercenary
-                )
-              }))
-            ),
-            updatedAt: context.now
-          },
-          context.now
-        );
-      }
+      if (state.turn.currentWeaponId === "seilzug") return toggleGrapple(state, activeMercenary, context.now);
 
       if (state.turn.hasFired || state.turn.resolvingShot) {
         return state;
@@ -3672,6 +3674,7 @@ export const chaosKommandoServerGame: ServerGame<
       weapons: state.weapons,
       rope: state.rope,
       projectiles: buildPublicProjectiles(state.projectiles),
+      weaponActions: state.weaponActions,
       explosions: state.explosions,
       gravestones: buildPublicGravestones(state.gravestones),
       mines: buildPublicMines(state.mines),

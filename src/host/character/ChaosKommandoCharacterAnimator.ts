@@ -1,3 +1,5 @@
+import { resolveWeaponMuzzle, resolveWeaponPivot, heldGunWeapons } from "../../combatGeometry.js";
+import { resolveFootSurface } from "../CharacterPresentation.js";
 import type {
   ChaosKommandoMercenaryState,
   ChaosKommandoState,
@@ -42,11 +44,12 @@ const THROW_RELEASE_DURATION_MS =
 const JUMP_REFERENCE_SPEED = 520;
 
 /** Ab dieser Horizontalgeschwindigkeit wird aus `jump` ein `longJump`. */
-const LONG_JUMP_SPEED = 150;
+const LONG_JUMP_SPEED = 100;
 
 export interface ChaosKommandoCharacterMemory {
   createdAtMs: number;
   previousHp: number;
+  previousShotId: string;
   previousGrounded: boolean;
   previousHasFired: boolean;
   previousTurnNumber: number;
@@ -187,6 +190,7 @@ export function createChaosKommandoCharacterMemory(
   return {
     createdAtMs: nowMs,
     previousHp: mercenary.hp,
+    previousShotId: state.weaponActions.filter((event) => event.mercenaryId === mercenary.id).at(-1)?.id ?? "",
     previousGrounded: mercenary.grounded,
     previousHasFired: state.turn.hasFired,
     previousTurnNumber: state.turn.turnNumber,
@@ -241,7 +245,7 @@ export function resolveChaosKommandoCharacterPose({
       : null;
   const displayedVisual = displayedWeaponId ? chaosKommandoWeaponVisuals[displayedWeaponId] : null;
 
-  const aim = resolveAim(mercenary, state, isActive, groundY, scale, profile);
+  const aim = resolveAim(mercenary, state, isActive);
   // Geschossen wird mit der Hand auf der Zielseite, geworfen mit der abgewandten:
   // die Wurfhand holt entgegen dem Zielvektor aus und braucht dort Platz.
   const aimsRight = aim.ux >= 0;
@@ -288,6 +292,26 @@ export function resolveChaosKommandoCharacterPose({
   applyTransientOffsets(pose, mercenary, state, nowMs, memory, scale);
   pose.headgear = resolveHeadgear(pose, profile, displayedVisual?.wearsHelmet ?? false, memory, mercenary, scale);
   pose.weapon = resolveWeaponPose(pose, displayedWeaponId, radius, aim);
+  if (throwing) pose.weapon = null;
+  if (pose.weapon && heldGunWeapons.includes(pose.weapon.weaponId)) {
+    const visual = chaosKommandoWeaponVisuals[pose.weapon.weaponId];
+    const muzzle = resolveWeaponMuzzle(mercenary, pose.weapon.weaponId);
+    const angle = pose.weapon.angle;
+    const dx = (visual.muzzle.x - visual.primaryGrip.x) * pose.weapon.displaySize * (pose.weapon.facesLeft ? -1 : 1);
+    const dy = (visual.muzzle.y - visual.primaryGrip.y) * pose.weapon.displaySize / visual.aspect;
+    const kick = resolveShotPulse(memory, nowMs) * radius * 0.24;
+    pose.weapon.gripX = muzzle.x - dx * Math.cos(angle) + dy * Math.sin(angle) - aim.ux * kick;
+    pose.weapon.gripY = muzzle.y - dx * Math.sin(angle) - dy * Math.cos(angle) - aim.uy * kick;
+    const primary = visual.posture === "two-hand" ? pose.weapon.facesLeft ? pose.rightHand : pose.leftHand
+      : pose.weapon.facesLeft ? pose.leftHand : pose.rightHand;
+    primary.x = pose.weapon.gripX; primary.y = pose.weapon.gripY;
+  }
+  if (mercenary.grounded && !state.rope) {
+    for (const foot of [pose.leftFoot, pose.rightFoot]) {
+      const contact = resolveFootSurface(state.terrain, foot.x, groundY);
+      if (contact !== null) foot.y += contact - groundY;
+    }
+  }
   return pose;
 }
 
@@ -321,6 +345,7 @@ function resolveMotionState({
   if (state.winnerPlayerId || state.isDraw) return "idle";
   if (memory.joyUntilMs > nowMs) return "joy";
   if (throwing) return "grenade";
+  if (state.rope?.mercenaryId === mercenary.id && (aiming || recoiling) && posture) return posture === "throw" ? "grenade" : posture === "one-hand" ? "handgun" : "shoot";
   if (!mercenary.grounded) {
     return Math.abs(mercenary.vx) > LONG_JUMP_SPEED ? "longJump" : "jump";
   }
@@ -420,34 +445,13 @@ function resolveExpression(
 function resolveAim(
   mercenary: ChaosKommandoMercenaryState,
   state: ChaosKommandoState,
-  isActive: boolean,
-  groundY: number,
-  scale: number,
-  profile: MarshmallowRigProfile
+  isActive: boolean
 ): MarshmallowAim {
-  const shoulderY = groundY - (155 + profile.armHeight * 92) * scale;
-  if (isActive) {
-    const dx = state.turn.crosshairX - mercenary.x;
-    const dy = state.turn.crosshairY - shoulderY;
-    const length = Math.max(1, Math.hypot(dx, dy));
-    return {
-      ux: dx / length,
-      uy: dy / length,
-      angle: Math.atan2(dy, dx),
-      targetX: state.turn.crosshairX,
-      targetY: state.turn.crosshairY
-    };
-  }
-  // Passive Figuren blicken entlang ihres Zielwinkels ins Leere.
+  const pivot = resolveWeaponPivot(mercenary);
   const angle = mercenary.aimAngleRad;
-  const distance = 520 * scale;
-  return {
-    ux: Math.cos(angle),
-    uy: Math.sin(angle),
-    angle,
-    targetX: mercenary.x + Math.cos(angle) * distance,
-    targetY: shoulderY + Math.sin(angle) * distance
-  };
+  const distance = isActive ? state.turn.crosshairDistance : 150;
+  return { ux: Math.cos(angle), uy: Math.sin(angle), angle,
+    targetX: pivot.x + Math.cos(angle) * distance, targetY: pivot.y + Math.sin(angle) * distance };
 }
 
 /* ------------------------------------------------------------------ */
@@ -503,7 +507,6 @@ function buildPose({
   const walkBounce = isWalk ? (1 - Math.cos(phase * 2)) * 9 * scale : 0;
   const idleBob = isIdle ? Math.sin(phase) * 0.8 * scale : 0;
   const joyBounce = isJoy ? (1 - Math.cos(phase * 2)) * 4.5 * scale : 0;
-  const jumpLift = jumpArc * (isLongJump ? 72 : 92) * scale;
 
   const shotPulse = resolveShotPulse(memory, nowMs);
   const shootRecoil = isShoot ? shotPulse * 4 * scale : 0;
@@ -512,7 +515,7 @@ function buildPose({
 
   const bodyX = anchorX + (isWalk ? step * 2.2 * scale : 0) - recoilX;
   const bodyBottom =
-    groundY - profile.torsoHeight * 145 * scale - walkBounce - idleBob - joyBounce - jumpLift - recoilY;
+    groundY - profile.torsoHeight * 145 * scale - walkBounce - idleBob - joyBounce - recoilY;
   const scaleX = 1 + compression * warpAmount;
   const scaleY = 1 - compression * warpAmount * 0.92;
   const shearX = (isWalk ? step * 0.06 : Math.sin(phase) * 0.004) * profile.warp;
@@ -522,13 +525,13 @@ function buildPose({
       ? Math.max(0, step) * 42 * profile.legMotion
       : isJoy
         ? Math.max(0, Math.sin(phase * 2)) * 6 * profile.legMotion
-        : jumpArc * 88) * scale;
+        : jumpArc * 36) * scale;
   const rightLift =
     (isWalk
       ? Math.max(0, -step) * 42 * profile.legMotion
       : isJoy
         ? Math.max(0, -Math.sin(phase * 2)) * 6 * profile.legMotion
-        : jumpArc * 88) * scale;
+        : jumpArc * 36) * scale;
 
   const footScale = scale * 1.08 * profile.legSize;
   const footCenterY = groundY - 31 * footScale;
@@ -875,9 +878,9 @@ function resolveWeaponPose(
   aim: MarshmallowAim
 ): MarshmallowWeaponPose | null {
   if (!weaponId) return null;
-  // Nur die zielgesteuerten Zustaende halten die Waffe. Beim Laufen, Springen
-  // oder Jubeln haengen die Haende frei, sonst zeigt die Waffe ins Leere.
-  if (pose.motionState !== "grenade" && pose.motionState !== "shoot" && pose.motionState !== "handgun") {
+  // Carry guns through the walking cycle; jumping and cheering free the hands.
+  const carryWhileWalking = (pose.motionState === "walk" || pose.motionState === "walkRight") && heldGunWeapons.includes(weaponId);
+  if (pose.motionState !== "grenade" && pose.motionState !== "shoot" && pose.motionState !== "handgun" && !carryWhileWalking) {
     return null;
   }
   const visual = chaosKommandoWeaponVisuals[weaponId];
@@ -1003,13 +1006,16 @@ function updateTransientAnimationMemory(
     memory.recoilUntilMs = 0;
     memory.throwReleasedAtMs = 0;
     memory.throwFrame = 0;
-  } else if (isActive && !memory.previousHasFired && state.turn.hasFired) {
+  }
+  const shot = state.weaponActions.filter((event) => event.mercenaryId === mercenary.id).at(-1);
+  if (shot && shot.id !== memory.previousShotId) {
+    memory.previousShotId = shot.id;
     memory.recoilStartedAtMs = nowMs;
-    memory.recoilUntilMs = nowMs + resolveRecoilDuration(state.turn.currentWeaponId);
-    memory.recoilWeaponId = state.turn.currentWeaponId;
-    if (chaosKommandoWeaponVisuals[state.turn.currentWeaponId].posture === "throw") {
+    memory.recoilUntilMs = nowMs + resolveRecoilDuration(shot.weaponId);
+    memory.recoilWeaponId = shot.weaponId;
+    if (chaosKommandoWeaponVisuals[shot.weaponId].posture === "throw") {
       memory.throwReleasedAtMs = nowMs;
-      memory.throwFrame = Math.max(memory.throwFrame, MARSHMALLOW_THROW_HOLD_FRAME);
+      memory.throwFrame = MARSHMALLOW_THROW_RELEASE_END_FRAME;
     }
   }
   memory.previousHp = mercenary.hp;
