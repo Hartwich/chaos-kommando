@@ -537,13 +537,13 @@ const chaosKommandoText = {
     suddenDeath: "SUDDEN DEATH! Das Wasser steigt!"
   },
   en: {
-    waitingAction: "Chaos Commando is waiting for the next action.",
+    waitingAction: "Chaos Squad is waiting for the next action.",
     playerTurn: (playerName: string, mercenaryName: string, weaponName: string) => `${playerName} is up | ${mercenaryName} with ${weaponName}`,
     wind: (direction: number, strength: number) => `${direction > 0 ? "Wind right" : "Wind left"} | ${Math.round(strength * 10)}`,
-    winner: (name: string) => `${name} wins Chaos Commando!`,
+    winner: (name: string) => `${name} wins Chaos Squad!`,
     draw: "All teams went down.",
     smokeClears: "The smoke clears. The next team is up.",
-    intro: "Chaos Commando is loosening the fuses.",
+    intro: "Chaos Squad is loosening the fuses.",
     introLog: "Colorful, loud, tactical, and delightfully mean.",
     start: "The fuse is lit. The first team rushes in.",
     mercenaryForward: (playerName: string, mercenaryName: string) => `${playerName} sends ${mercenaryName} forward.`,
@@ -599,28 +599,28 @@ function isAirstrikeWeapon(weaponId: ChaosKommandoWeaponId): weaponId is ChaosKo
 
 const mercenaryTemplates: Array<{
   role: ChaosKommandoMercenaryRole;
-  name: string;
+  name: Record<SupportedLanguage, string>;
   spritePath: string;
   portraitPath: string;
   accentColor: string;
 }> = [
   {
     role: "sprinter",
-    name: "Turbo-Toni",
+    name: { de: "Turbo-Toni", en: "Turbo Tony" },
     spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
     portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#22d3ee"
   },
   {
     role: "grenadier",
-    name: "Greta Granate",
+    name: { de: "Greta Granate", en: "Grenade Greta" },
     spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
     portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#fbbf24"
   },
   {
     role: "chaos-schuetze",
-    name: "Bummo Blitz",
+    name: { de: "Bummo Blitz", en: "Boomer Blitz" },
     spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
     portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#fb7185"
@@ -758,7 +758,7 @@ function resolveSampleHeight(samples: number[], x: number): number {
   return (samples[leftIndex] ?? samples[samples.length - 1]) * (1 - blend) + (samples[rightIndex] ?? samples[leftIndex] ?? 0) * blend;
 }
 
-function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainState {
+function createTerrain(playerCount: number, seed: number, language: SupportedLanguage): ChaosKommandoTerrainState {
   const preset = terrainPresets[Math.abs(seed) % terrainPresets.length] ?? terrainPresets[0];
   const sampleCount = Math.floor(terrainWidth / sampleSpacing) + 1;
   const samples = Array.from({ length: sampleCount }, (_, index) => {
@@ -775,7 +775,7 @@ function createTerrain(playerCount: number, seed: number): ChaosKommandoTerrainS
   const craters = preset.initialCraters.map((crater) => ({ ...crater, x: crater.x * (5 / 3), y: crater.y * 1.6, r: crater.r * 1.6 }));
   return {
     mapId: preset.id,
-    mapName: preset.name,
+    mapName: language === "en" ? preset.nameEn : preset.name,
     width: terrainWidth,
     height: terrainHeight,
     waterlineY: initialWaterlineY,
@@ -886,14 +886,15 @@ function createMercenary(
   template: (typeof mercenaryTemplates)[number],
   mercenaryIndex: number,
   spawnX: number,
-  terrain: ChaosKommandoTerrainState
+  terrain: ChaosKommandoTerrainState,
+  language: SupportedLanguage
 ): RuntimeMercenaryState {
   const x = clamp(spawnX, mercenaryRadius + 4, terrain.width - mercenaryRadius - 4);
   const y = resolveSpawnGroundY(terrain, x) - mercenaryRadius;
 
   return {
     id: `${player.id}:merc:${mercenaryIndex}`,
-    name: template.name,
+    name: template.name[language],
     role: template.role,
     playerId: player.id,
     playerName: player.name,
@@ -974,14 +975,15 @@ function countAliveMercenaries(mercenaries: RuntimeMercenaryState[]): number {
 
 function createPlayers(
   players: ServerGameContext["players"],
-  terrain: ChaosKommandoTerrainState
+  terrain: ChaosKommandoTerrainState,
+  language: SupportedLanguage
 ): RuntimePlayerState[] {
   const safePlayers = players.length > 0
     ? players
     : [
         {
           id: "chaos-p1",
-          name: "Spieler 1",
+          name: language === "en" ? "Player 1" : "Spieler 1",
           color: "#38bdf8",
           score: 0,
           isReady: true,
@@ -989,7 +991,7 @@ function createPlayers(
         },
         {
           id: "chaos-p2",
-          name: "Spieler 2",
+          name: language === "en" ? "Player 2" : "Spieler 2",
           color: "#fb7185",
           score: 0,
           isReady: true,
@@ -1005,7 +1007,8 @@ function createPlayers(
         template,
         mercenaryIndex,
         spawnXs[mercenaryIndex] ?? terrain.width / 2,
-        terrain
+        terrain,
+        language
       )
     );
 
@@ -3302,7 +3305,7 @@ function buildScore(state: ChaosKommandoRuntimeState): ScoreEntry[] {
       player.playerId === state.winnerPlayerId
         ? 4 + player.aliveMercenaryCount
         : player.aliveMercenaryCount,
-    reason: "Chaos-Kommando"
+    reason: state.language === "en" ? "Chaos Squad" : "Chaos-Kommando"
   }));
 }
 
@@ -3314,8 +3317,8 @@ export const chaosKommandoServerGame: ServerGame<
   manifest: chaosKommandoManifest,
   createInitialState(context) {
     const seed = createSeed(context);
-    const terrain = createTerrain(context.players.length || 2, seed);
-    const players = refreshPlayerSummaries(createPlayers(context.players, terrain));
+    const terrain = createTerrain(context.players.length || 2, seed, context.language);
+    const players = refreshPlayerSummaries(createPlayers(context.players, terrain, context.language));
     const turn = buildTurnState(players, context.now);
     const activeMercenary = findMercenaryById({ players }, turn.activeMercenaryId);
     const text = chaosKommandoText[context.language];

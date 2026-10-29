@@ -20,6 +20,8 @@ const hostTheme = {
 } as const;
 
 interface HostAppStateLike {
+  room?: { language?: "de" | "en" } | null;
+  preferredLanguage?: "de" | "en";
   game?: {
     state?: unknown;
   } | null;
@@ -34,6 +36,7 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
   private unsubscribe?: () => void;
   private renderState?: ChaosKommandoRenderState;
   private serverNow: () => number = Date.now;
+  private language: "de" | "en" = "de";
   private latestGameState: ChaosKommandoState | null = null;
   private audioRig = new ChaosKommandoAudioRig();
   private headerText?: Phaser.GameObjects.Text;
@@ -115,6 +118,7 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
         return;
       }
 
+      this.language = state.room?.language ?? state.preferredLanguage ?? "de";
       const previousGameState = this.latestGameState;
       this.latestGameState = (state.game?.state ?? null) as ChaosKommandoState | null;
 
@@ -243,7 +247,7 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
     const gameState = this.latestGameState;
 
     if (!gameState) {
-      this.headerText.setText("Chaos-Kommando");
+      this.headerText.setText(this.language === "en" ? "Chaos Squad" : "Chaos-Kommando");
       this.infoText.setText("");
       return;
     }
@@ -269,9 +273,9 @@ export class ChaosKommandoHostScene extends Phaser.Scene {
         ? activeMercenary
           ? `${currentPlayer.name} · ${activeMercenary.name}`
           : currentPlayer.name
-        : "Chaos-Kommando";
+        : (en ? "Chaos Squad" : "Chaos-Kommando");
     const compact = this.scale.width < 1080;
-    this.headerText.setText("CHAOS-KOMMANDO").setPosition(24, compact ? 7 : 14).setFontSize(compact ? 18 : 26);
+    this.headerText.setText(en ? "CHAOS SQUAD" : "CHAOS-KOMMANDO").setPosition(24, compact ? 7 : 14).setFontSize(compact ? 18 : 26);
     this.turnText?.setOrigin(compact ? 0 : 0.5, 0).setFontSize(compact ? 15 : 20)
       .setPosition(compact ? 24 : this.scale.width / 2, compact ? 32 : 18)
       .setText(headline.length > (compact ? 28 : 32) ? `${headline.slice(0, compact ? 27 : 31)}…` : headline);

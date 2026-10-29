@@ -1,7 +1,9 @@
+import { chaosKommandoText } from "./catalogText.js";
 import type { GameManifest } from "@open-party-lab/game-core";
 
 export const chaosKommandoManifest = {
   id: "chaos-kommando",
+  translations: chaosKommandoText,
   displayName: "Chaos-Kommando",
   description: "Marshmallow-Runden-Artillerie: geroestete Kommandos, sechs Teams, Inselarenen, Minen, Kisten und komplett zerstoerbares Terrain mit Tunneln.",
   minPlayers: 2,

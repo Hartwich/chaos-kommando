@@ -3,6 +3,7 @@ import type { ChaosKommandoCraterState, ChaosKommandoPlatformState } from "../pr
 export interface TerrainPreset {
   id: string;
   name: string;
+  nameEn: string;
   controlPoints: { x: number; y: number }[];
   initialCraters: ChaosKommandoCraterState[];
   platforms: ChaosKommandoPlatformState[];
@@ -12,7 +13,7 @@ export interface TerrainPreset {
 // the tall sinusoidal hills and inaccessible floating saucers.
 export const terrainPresets: TerrainPreset[] = [
   {
-    id: "korallenriff", name: "Korallenriff",
+    id: "korallenriff", name: "Korallenriff", nameEn: "Coral Reef",
     controlPoints: [
       { x: 0, y: 1000 }, { x: 45, y: 1000 }, { x: 85, y: 610 }, { x: 235, y: 610 },
       { x: 250, y: 555 }, { x: 395, y: 555 }, { x: 410, y: 500 }, { x: 570, y: 500 },
@@ -28,7 +29,7 @@ export const terrainPresets: TerrainPreset[] = [
     platforms: [{ x: 654, y: 621, rx: 40, ry: 24 }, { x: 1292, y: 586, rx: 38, ry: 23 }]
   },
   {
-    id: "brueckenbucht", name: "Brueckenbucht",
+    id: "brueckenbucht", name: "Brueckenbucht", nameEn: "Bridge Bay",
     controlPoints: [
       { x: 0, y: 1000 }, { x: 55, y: 1000 }, { x: 90, y: 520 }, { x: 240, y: 520 },
       { x: 255, y: 575 }, { x: 410, y: 575 }, { x: 425, y: 630 }, { x: 580, y: 630 },
@@ -43,7 +44,7 @@ export const terrainPresets: TerrainPreset[] = [
     platforms: [{ x: 650, y: 635, rx: 43, ry: 25 }, { x: 1295, y: 637, rx: 40, ry: 25 }]
   },
   {
-    id: "splitterinseln", name: "Splitterinseln",
+    id: "splitterinseln", name: "Splitterinseln", nameEn: "Shard Islands",
     controlPoints: [
       { x: 0, y: 1000 }, { x: 45, y: 1000 }, { x: 80, y: 560 }, { x: 240, y: 560 },
       { x: 255, y: 505 }, { x: 410, y: 505 }, { x: 425, y: 610 }, { x: 600, y: 610 },

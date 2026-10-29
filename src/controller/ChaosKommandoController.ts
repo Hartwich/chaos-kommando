@@ -165,7 +165,7 @@ export function buildChaosKommandoControllerModel(
     : resolving ? (en ? "Resolving consequences" : "Folgen abwarten")
     : isLocalPlayersTurn ? (en ? "Your turn" : "Dein Zug")
     : (en ? "Watching" : "Zuschauen");
-  const title = currentPlayer?.name ? `${currentPlayer.name} Kommando` : "Chaos-Kommando";
+  const title = currentPlayer?.name ? (en ? `${currentPlayer.name} Squad` : `${currentPlayer.name} Kommando`) : (en ? "Chaos Squad" : "Chaos-Kommando");
   const subtitle = status;
   const helperText = en
     ? "Hook grips ceilings and overhangs. Hold Pull up; move to swing, jump to launch off. One attack, then 3 seconds to retreat."
