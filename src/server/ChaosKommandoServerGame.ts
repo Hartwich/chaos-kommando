@@ -3381,6 +3381,14 @@ export const chaosKommandoServerGame: ServerGame<
       }
     ) as ChaosKommandoRuntimeState;
   },
+  onPause(state) {
+    return {
+      ...state,
+      players: state.players.map((player) => ({ ...player, mercenaries: player.mercenaries.map((mercenary) =>
+        ({ ...mercenary, moveInputX: 0, moveInputY: 0 })) })),
+      turn: { ...state.turn, chargeStartedAt: null, chargeRatio: 0 }
+    };
+  },
   handleInput(state, input, context) {
     // Zeitspannen (Aufladen, Sprung-Cooldown, Zugende) werden bewusst nur gegen
     // `context.now` gerechnet. `input.sentAt` kommt von der Uhr des Telefons und
