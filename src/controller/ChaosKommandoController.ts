@@ -125,13 +125,13 @@ function resolveActiveMercenary(state: ChaosKommandoState | null) {
   return null;
 }
 
-function buildStats(state: ChaosKommandoState | null, en: boolean, now: number): LayoutStat[] {
+function buildStats(state: ChaosKommandoState | null, language: SupportedLanguage, now: number): LayoutStat[] {
   if (!state) {
     return [];
   }
 
   return [
-    { label: en ? "Time" : "Zeit", value: state.turn.resolvingShot ? (state.turn.retreatEndsAt !== null && now < state.turn.retreatEndsAt ? formatSeconds(state.turn.retreatEndsAt, now) : "—") : formatSeconds(state.turn.turnEndsAt, now), highlighted: true }
+    { label: ({ de: "Zeit", en: "Time", es: "Tiempo", fr: "Temps", "pt-BR": "Tempo" })[language], value: state.turn.resolvingShot ? (state.turn.retreatEndsAt !== null && now < state.turn.retreatEndsAt ? formatSeconds(state.turn.retreatEndsAt, now) : "—") : formatSeconds(state.turn.turnEndsAt, now), highlighted: true }
   ];
 }
 
@@ -140,7 +140,14 @@ export function buildChaosKommandoControllerModel(
 ): ChaosKommandoLayoutModel {
   const playerId = context.state.player?.id ?? "";
   const language = context.state.room?.language;
-  const en = language === "en";
+  const lang = language ?? "de";
+  const words = {
+    de: { ready: "Bereitmachen", retreat: "Rückzug!", resolving: "Folgen abwarten", turn: "Dein Zug", watching: "Zuschauen", squad: "Kommando", chaos: "Chaos-Kommando", helper: "Der Haken greift an Decken und Überhängen. Hochziehen halten, mit dem Stick schwingen und mit Sprung abspringen. Ein Angriff, danach 3 Sekunden Rückzug.", fireInstant: "Sofort feuern. Kein Aufladen nötig.", fireCharge: "Halten = mehr Wumms, loslassen = Feuer.", noMerc: "Kein aktiver Söldner", wind: "Wind ruhig", readyState: "Einsatzbereit", out: "Ausgeschaltet" },
+    en: { ready: "Get ready", retreat: "Retreat!", resolving: "Resolving consequences", turn: "Your turn", watching: "Watching", squad: "Squad", chaos: "Chaos Squad", helper: "Hook grips ceilings and overhangs. Hold Pull up; move to swing, jump to launch off. One attack, then 3 seconds to retreat.", fireInstant: "Fire immediately. No charging needed.", fireCharge: "Hold for more power, release to fire.", noMerc: "No active mercenary", wind: "Calm wind", readyState: "Ready", out: "Knocked out" },
+    es: { ready: "Prepárate", retreat: "¡Retirada!", resolving: "Resolviendo consecuencias", turn: "Tu turno", watching: "Observando", squad: "Escuadrón", chaos: "Escuadrón del Caos", helper: "El gancho se agarra a techos y salientes. Mantén Tirar para subir; muévete para balancearte y salta para soltarte. Un ataque y luego 3 segundos para retirarte.", fireInstant: "Dispara de inmediato. No hace falta cargar.", fireCharge: "Mantén para cargar y suelta para disparar.", noMerc: "Sin mercenario activo", wind: "Viento en calma", readyState: "Listo", out: "Fuera de combate" },
+    fr: { ready: "Prépare-toi", retreat: "Retraite !", resolving: "Résolution des conséquences", turn: "À toi de jouer", watching: "Observation", squad: "Escouade", chaos: "Escouade du chaos", helper: "Le grappin s’accroche aux plafonds et aux surplombs. Maintiens Tirer pour monter, bouge pour te balancer et saute pour lâcher. Une attaque, puis 3 secondes pour battre en retraite.", fireInstant: "Tire immédiatement, sans charger.", fireCharge: "Maintiens pour charger, relâche pour tirer.", noMerc: "Aucun mercenaire actif", wind: "Vent calme", readyState: "Prêt", out: "Éliminé" },
+    "pt-BR": { ready: "Prepare-se", retreat: "Recuar!", resolving: "Resolvendo consequências", turn: "Sua vez", watching: "Observando", squad: "Esquadrão", chaos: "Esquadrão do Caos", helper: "O gancho prende em tetos e saliências. Segure Puxar para subir; mova para balançar e pule para soltar. Um ataque, depois 3 segundos para recuar.", fireInstant: "Atire imediatamente, sem carregar.", fireCharge: "Segure para carregar e solte para atirar.", noMerc: "Sem mercenário ativo", wind: "Vento calmo", readyState: "Pronto", out: "Nocauteado" }
+  }[lang];
   const gameState = (context.state.game?.state ?? null) as ChaosKommandoState | null;
   const currentPlayer = resolveCurrentPlayer(gameState, playerId);
   const activeMercenary = resolveActiveMercenary(gameState);
@@ -160,22 +167,16 @@ export function buildChaosKommandoControllerModel(
   const resolving = expired || Boolean(gameState?.turn.resolvingShot && !retreating);
   const disabled = !isLocalPlayersTurn || preparing || resolving || !activeMercenary?.alive;
   const fireDisabled = disabled || Boolean(gameState?.turn.hasFired) || (!activeMercenary?.grounded && !gameState?.rope);
-  const status = preparing ? (en ? "Get ready" : "Bereitmachen")
-    : retreating ? (en ? "Retreat!" : "Rueckzug!")
-    : resolving ? (en ? "Resolving consequences" : "Folgen abwarten")
-    : isLocalPlayersTurn ? (en ? "Your turn" : "Dein Zug")
-    : (en ? "Watching" : "Zuschauen");
-  const title = currentPlayer?.name ? (en ? `${currentPlayer.name} Squad` : `${currentPlayer.name} Kommando`) : (en ? "Chaos Squad" : "Chaos-Kommando");
+  const status = preparing ? words.ready : retreating ? words.retreat : resolving ? words.resolving : isLocalPlayersTurn ? words.turn : words.watching;
+  const title = currentPlayer?.name ? `${currentPlayer.name} ${words.squad}` : words.chaos;
   const subtitle = status;
-  const helperText = en
-    ? "Hook grips ceilings and overhangs. Hold Pull up; move to swing, jump to launch off. One attack, then 3 seconds to retreat."
-    : "Haken greift Decken und Ueberhaenge. Hochziehen halten, Stick zum Schwingen, Sprung zum Abspringen. Ein Angriff, dann 3 Sekunden Rueckzug.";
+  const helperText = words.helper;
   const fireMode = currentWeapon?.fireMode ?? "charged";
   const fireHint =
     currentWeapon?.description ??
     (fireMode === "instant"
-      ? en ? "Fire immediately. No charging needed." : "Direkt feuern. Kein Aufladen noetig."
-      : en ? "Hold for more power, release to fire." : "Halten = mehr Wumms, loslassen = Feuer.");
+      ? words.fireInstant
+      : words.fireCharge);
 
   return {
     kind: "chaos_kommando_controls",
@@ -197,11 +198,11 @@ export function buildChaosKommandoControllerModel(
     accentColor: currentPlayer?.color ?? context.state.player?.color ?? "#22d3ee",
     resetKey: `${context.state.game?.roundNumber ?? 0}:${context.state.game?.phase ?? "idle"}:${gameState?.turn.activeMercenaryId ?? "none"}`,
     countdownEndsAtMs: retreating ? gameState?.turn.retreatEndsAt ?? undefined : resolving || preparing ? undefined : gameState?.turn.turnEndsAt,
-    stats: buildStats(gameState, en, now),
+    stats: buildStats(gameState, lang, now),
     turnOwnerLabel: activeMercenary
       ? `${activeMercenary.playerName} | ${activeMercenary.name}`
-      : en ? "No active mercenary" : "Kein aktiver Soeldner",
-    windLabel: gameState?.wind.label ?? (en ? "Calm wind" : "Wind ruhig"),
+      : words.noMerc,
+    windLabel: gameState?.wind.label ?? words.wind,
     fireLabel: currentWeapon?.displayName ?? "FIRE",
     fireHint,
     fireMode,
@@ -210,7 +211,7 @@ export function buildChaosKommandoControllerModel(
       currentPlayer?.mercenaries.map((mercenary) => ({
         id: mercenary.id,
         label: mercenary.name,
-        subtitle: mercenary.alive ? (en ? "Ready" : "Einsatzbereit") : (en ? "Knocked out" : "Ausgeschaltet"),
+        subtitle: mercenary.alive ? words.readyState : words.out,
         hpLabel: `${Math.max(0, Math.round(mercenary.hp))}/${mercenary.maxHp} HP`,
         iconPath: mercenary.portraitPath,
         teamColor: currentPlayer.color,

@@ -606,21 +606,21 @@ const mercenaryTemplates: Array<{
 }> = [
   {
     role: "sprinter",
-    name: { de: "Turbo-Toni", en: "Turbo Tony" },
+    name: { de: "Turbo-Toni", en: "Turbo Tony", es: "Turbo Toni", fr: "Turbo Tony", "pt-BR": "Turbo Tony" },
     spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
     portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#22d3ee"
   },
   {
     role: "grenadier",
-    name: { de: "Greta Granate", en: "Grenade Greta" },
+    name: { de: "Greta Granate", en: "Grenade Greta", es: "Greta Granada", fr: "Greta Grenade", "pt-BR": "Greta Granada" },
     spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
     portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#fbbf24"
   },
   {
     role: "chaos-schuetze",
-    name: { de: "Bummo Blitz", en: "Boomer Blitz" },
+    name: { de: "Bummo Blitz", en: "Boomer Blitz", es: "Bummo Relámpago", fr: "Bummo Éclair", "pt-BR": "Bummo Relâmpago" },
     spritePath: "/chaos-kommando/characters/marshmallow/portrait.png",
     portraitPath: "/chaos-kommando/characters/marshmallow/portrait.png",
     accentColor: "#fb7185"
@@ -692,7 +692,7 @@ function buildWind(seed: number, language: SupportedLanguage): ChaosKommandoWind
   return {
     strength,
     direction,
-    label: chaosKommandoText[language].wind(direction, strength)
+    label: chaosKommandoText[language === "de" ? "de" : "en"].wind(direction, strength)
   };
 }
 
@@ -1221,7 +1221,7 @@ function findCurrentPlayerIndex(state: ChaosKommandoRuntimeState): number {
 function buildTurnMessage(state: ChaosKommandoRuntimeState): string {
   const player = findPlayer(state, state.turn.currentPlayerId);
   const mercenary = findMercenaryById(state, state.turn.activeMercenaryId);
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
 
   if (!player || !mercenary) {
     return text.waitingAction;
@@ -1332,7 +1332,7 @@ function spawnCrateIfDue(
   ];
   const weaponId = crateWeapons[Math.floor(rng() * crateWeapons.length)] ?? "banane";
   const x = 160 + rng() * (state.terrain.width - 320);
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
 
   return {
     ...state,
@@ -1365,7 +1365,7 @@ function applySuddenDeath(
   }
 
   const nextWaterlineY = Math.max(560, state.terrain.waterlineY - suddenDeathWaterRisePerTurn);
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
 
   return {
     ...state,
@@ -1614,7 +1614,7 @@ function applyExplosion(
     color: definition.accentColor,
     createdAt: now
   };
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
   let actionLog = pushActionLog(
     state.actionLog,
     `${findPlayer(state, ownerPlayerId)?.name ?? "Ein Team"} locht das Terrain mit ${definition.displayName}.`
@@ -2389,7 +2389,7 @@ function updateProjectile(
     vy: projectile.vy + gravity * projectile.gravityScale * seconds
   };
   const terrain = state.terrain;
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
 
   nextProjectile.armed = nextProjectile.armed || nextProjectile.ageMs > 120;
 
@@ -2637,7 +2637,7 @@ function applyMinePhysics(
   }
 
   const seconds = Math.max(0.001, deltaMs / 1000);
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
   let logMineTriggered = false;
   let nextState = state;
   const survivingMines: RuntimeMineState[] = [];
@@ -2721,7 +2721,7 @@ function applyCratePhysics(
   }
 
   const seconds = Math.max(0.001, deltaMs / 1000);
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
   let nextState = state;
   const survivingCrates: RuntimeCrateState[] = [];
 
@@ -2947,7 +2947,7 @@ function applyMercenaryPhysics(
 ): ChaosKommandoRuntimeState {
   const seconds = Math.max(0.001, deltaMs / 1000);
   const terrain = state.terrain;
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
   let drownedName: string | null = null;
   // Das Seil reisst, sobald sein Ankerpunkt weggesprengt wurde.
   let nextRope: ChaosKommandoRopeState | null =
@@ -3156,7 +3156,7 @@ function resolveWinnerLock(state: ChaosKommandoRuntimeState, now: number): Chaos
   }
 
   const winner = alivePlayers[0];
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
   const message = winner ? text.winner(winner.name) : text.draw;
 
   return transitionRoundState(
@@ -3200,7 +3200,7 @@ function maybeAdvanceAfterShot(state: ChaosKommandoRuntimeState, now: number): C
   }
 
   const activeMercenary = findMercenaryById(state, state.turn.activeMercenaryId);
-  const text = chaosKommandoText[state.language];
+  const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
   if (state.turn.retreatEndsAt !== null && now < state.turn.retreatEndsAt) {
     return state;
   }
@@ -3321,7 +3321,7 @@ export const chaosKommandoServerGame: ServerGame<
     const players = refreshPlayerSummaries(createPlayers(context.players, terrain, context.language));
     const turn = buildTurnState(players, context.now);
     const activeMercenary = findMercenaryById({ players }, turn.activeMercenaryId);
-    const text = chaosKommandoText[context.language];
+    const text = chaosKommandoText[context.language === "de" ? "de" : "en"];
 
     return {
       ...createBaseRoundState("round_intro", context.now, {
@@ -3357,7 +3357,7 @@ export const chaosKommandoServerGame: ServerGame<
   },
   startRound(state, context) {
     const currentPlayer = findPlayer(state, state.turn.currentPlayerId) ?? state.players[0];
-    const text = chaosKommandoText[state.language];
+    const text = chaosKommandoText[state.language === "de" ? "de" : "en"];
 
     return transitionRoundState(
       startPlayerTurn(

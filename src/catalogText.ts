@@ -14,5 +14,20 @@ export const chaosKommandoText = {
     "visual": {
       "eyebrow": "Artillery"
     }
+  },
+  "es": {
+    "displayName": "Escuadrón del Caos",
+    "description": "Artillería por turnos: seis equipos, arenas isleñas, minas, cajas y terreno destructible con túneles.",
+    "visual": { "eyebrow": "Artillería" }
+  },
+  "fr": {
+    "displayName": "Escouade du chaos",
+    "description": "Artillerie au tour par tour : six équipes, arènes insulaires, mines, caisses et terrain destructible avec tunnels.",
+    "visual": { "eyebrow": "Artillerie" }
+  },
+  "pt-BR": {
+    "displayName": "Esquadrão do Caos",
+    "description": "Artilharia por turnos: seis equipes, arenas em ilhas, minas, caixas e terreno destrutível com túneis.",
+    "visual": { "eyebrow": "Artilharia" }
   }
 } as const satisfies LocalizedGameTextMap;
